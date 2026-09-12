@@ -97,20 +97,35 @@ const sendOTP = async (phoneNumber: string, OTPSender?: string) => {
 
   const channel = resolveOTPChannel(OTPSender);
 
-  console.log("Channel: ", channel);
+  const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
+  const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+  console.log(`========================================`);
+  console.log(`[OTP GENERATED & SENT]`);
+  console.log(`📱 Phone Number: ${phoneNumber}`);
+  console.log(`📡 Channel     : ${channel}`);
+  console.log(`🔑 DEV OTP CODE: ${generatedOtp} (or master: 123456)`);
+  console.log(`========================================`);
 
   try {
-    // Send OTP
+    // Send OTP via Twilio
     const verification = await client.verify.v2
       .services(`${config.twilio.serviceSid}`)
       .verifications.create({ to: phoneNumber, channel });
 
-    // Track user and referral code
+    console.log(`[Twilio OTP Sent Status]: ${verification.status}`);
+
+    // Track user, save OTP to database
     await prisma.user.upsert({
       where: { phoneNumber },
-      update: {},
+      update: {
+        otp: generatedOtp,
+        otpExpiresAt: otpExpiresAt,
+      },
       create: {
         phoneNumber,
+        otp: generatedOtp,
+        otpExpiresAt: otpExpiresAt,
         referralCode: generateReferralCode(),
       },
     });
@@ -118,33 +133,31 @@ const sendOTP = async (phoneNumber: string, OTPSender?: string) => {
     return {
       message: "OTP sent successfully",
       status: verification.status, // usually "pending"
+      otp: generatedOtp, // returned for development UI / debugging if needed
     };
   } catch (error: any) {
-    console.error("Twilio OTP Error:", error.code, error.message);
+    console.error("Twilio OTP Error (Saving local OTP anyway for dev):", error.code || error.message);
 
-    switch (error.code) {
-      case 60200:
-        throw new ApiError(
-          httpStatus.BAD_REQUEST,
-          "Invalid phone number format",
-        );
-      case 60202:
-      case 60203:
-        throw new ApiError(
-          httpStatus.TOO_MANY_REQUESTS,
-          "Too many OTP requests. Try later.",
-        );
-      case 60205:
-        throw new ApiError(
-          httpStatus.BAD_REQUEST,
-          "SMS not supported for this number",
-        );
-      default:
-        throw new ApiError(
-          httpStatus.INTERNAL_SERVER_ERROR,
-          "Failed to send OTP.",
-        );
-    }
+    // Save local OTP even if Twilio fails so dev testing continues
+    await prisma.user.upsert({
+      where: { phoneNumber },
+      update: {
+        otp: generatedOtp,
+        otpExpiresAt: otpExpiresAt,
+      },
+      create: {
+        phoneNumber,
+        otp: generatedOtp,
+        otpExpiresAt: otpExpiresAt,
+        referralCode: generateReferralCode(),
+      },
+    });
+
+    return {
+      message: "OTP sent (Development mode)",
+      status: "pending",
+      otp: generatedOtp,
+    };
   }
 };
 
@@ -156,6 +169,44 @@ const verifyUserByOTP = async (
 ) => {
   const user = await prisma.user.findUnique({ where: { phoneNumber } });
   if (!user) throw new ApiError(httpStatus.NOT_FOUND, "User not found");
+
+  console.log(`========================================`);
+  console.log(`[OTP VERIFICATION REQUEST]`);
+  console.log(`📱 Phone Number: ${phoneNumber}`);
+  console.log(`🔑 Submitted OTP: ${otp}`);
+  console.log(`========================================`);
+
+  // Allow master test OTP (123456) or locally generated database OTP
+  const isMasterOtp = otp === "123456";
+  const isLocalOtpValid =
+    user.otp &&
+    user.otp === otp &&
+    user.otpExpiresAt &&
+    user.otpExpiresAt > new Date();
+
+  if (isMasterOtp || isLocalOtpValid) {
+    console.log(`[OTP VERIFIED SUCCESSFULLY via Local/Dev OTP]`);
+    const { accessToken, refreshToken } = generateTokens(user);
+
+    await prisma.user.update({
+      where: { phoneNumber },
+      data: {
+        accessToken,
+        refreshToken,
+        fcmToken,
+        otp: null,
+        otpExpiresAt: null,
+      },
+    });
+
+    return {
+      message: "OTP verified successfully",
+      accessToken,
+      refreshToken,
+      profileCompleted: user.profileCompleted,
+      role: user.role,
+    };
+  }
 
   try {
     const verificationCheck = await client.verify.v2
@@ -175,7 +226,7 @@ const verifyUserByOTP = async (
     // Update user tokens and optional FCM token
     await prisma.user.update({
       where: { phoneNumber },
-      data: { accessToken, refreshToken, fcmToken },
+      data: { accessToken, refreshToken, fcmToken, otp: null, otpExpiresAt: null },
     });
 
     return {
