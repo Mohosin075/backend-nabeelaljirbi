@@ -2214,3 +2214,11 @@
 {"level":"info","message":"Incoming request: GET /api/v1/admin/get-clinic?page=1&limit=10&search=","service":"default-service-name","timestamp":"2026-09-15 09:59:41"}
 {"level":"info","message":"Incoming request: GET /api/v1/admin/get-clinic?page=1&limit=10&search=","service":"default-service-name","timestamp":"2026-09-15 09:59:41"}
 {"level":"info","message":"Incoming request: PATCH /api/v1/clinic/update-info","service":"default-service-name","timestamp":"2026-09-15 10:01:18"}
+{"level":"info","message":"Incoming request: GET /api/v1/clinic?page=1&limit=50","service":"default-service-name","timestamp":"2026-09-15 10:21:11"}
+{"level":"info","message":"Incoming request: GET /api/v1/specialist?page=1&limit=50","service":"default-service-name","timestamp":"2026-09-15 10:21:11"}
+{"level":"info","message":"Incoming request: GET /api/v1/otp-system","service":"default-service-name","timestamp":"2026-09-15 10:23:42"}
+{"level":"info","message":"Incoming request: POST /api/v1/auth/send-otp","service":"default-service-name","timestamp":"2026-09-15 10:23:57"}
+{"level":"info","message":"Incoming request: POST /api/v1/auth/verify-otp","service":"default-service-name","timestamp":"2026-09-15 10:24:12"}
+{"level":"info","message":"Incoming request: GET /api/v1/specialist?page=1&limit=50","service":"default-service-name","timestamp":"2026-09-15 10:24:14"}
+{"level":"info","message":"Incoming request: GET /api/v1/clinic?page=1&limit=50","service":"default-service-name","timestamp":"2026-09-15 10:24:14"}
+{"level":"info","message":"Incoming request: PATCH /api/v1/doctor/profile-update","service":"default-service-name","timestamp":"2026-09-15 10:25:54"}

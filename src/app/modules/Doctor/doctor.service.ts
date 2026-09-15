@@ -78,19 +78,38 @@ const getDoctorProfile = async (userId: string) => {
 };
 
 const updateDoctorProfile = async (userId: string, payload: any) => {
-  const user = await prisma.user.findUnique({ where: { id: userId } });
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { doctor: true },
+  });
   if (!user) throw new ApiError(httpStatus.NOT_FOUND, "User not found");
 
   const { accessToken } = generateTokens(user, UserRole.DOCTOR);
+
+  let parsedDateOfBirth: Date | undefined = undefined;
+  if (payload.dateOfBirth) {
+    const d = new Date(payload.dateOfBirth);
+    if (!isNaN(d.getTime())) {
+      parsedDateOfBirth = d;
+    }
+  }
+
+  const isClinicChanging =
+    Boolean(payload.clinicId) && user.doctor?.clinicId !== payload.clinicId;
+
+  const consultFeeVal =
+    payload.consultFee !== undefined &&
+    payload.consultFee !== null &&
+    payload.consultFee !== ""
+      ? Number(payload.consultFee)
+      : undefined;
 
   const updatedUser = await prisma.user.update({
     where: { id: userId },
     data: {
       ...(payload.fullName && { fullName: payload.fullName }),
       ...(payload.gender && { gender: payload.gender }),
-      ...(payload.dateOfBirth && {
-        dateOfBirth: new Date(payload.dateOfBirth),
-      }),
+      ...(parsedDateOfBirth && { dateOfBirth: parsedDateOfBirth }),
       ...(payload.country && { country: payload.country }),
       ...(payload.city && { city: payload.city }),
       ...(payload.address && { address: payload.address }),
@@ -111,10 +130,9 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
             speciality: payload.speciality,
             experience: payload.experience ? payload.experience : undefined,
             licenseNumber: payload.licenseNumber,
-            consultFee: payload.consultFee
-              ? Number(payload.consultFee)
-              : undefined,
+            consultFee: consultFeeVal !== undefined ? consultFeeVal : undefined,
             clinicId: payload.clinicId,
+            ...(payload.clinicId && { joinClinicDate: new Date() }),
             biography: payload.biography,
           },
           update: {
@@ -127,13 +145,13 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
             ...(payload.licenseNumber && {
               licenseNumber: payload.licenseNumber,
             }),
-            ...(payload.consultFee !== undefined && {
-              consultFee: Number(payload.consultFee),
+            ...(consultFeeVal !== undefined && {
+              consultFee: consultFeeVal,
             }),
             ...(payload.clinicId && {
               clinicId: payload.clinicId,
             }),
-            ...(payload.clinicId && {
+            ...(isClinicChanging && {
               joinClinicDate: new Date(),
             }),
             ...(payload.biography && { biography: payload.biography }),
