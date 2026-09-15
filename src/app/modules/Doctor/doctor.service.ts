@@ -154,7 +154,7 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
             ...(isClinicChanging && {
               joinClinicDate: new Date(),
             }),
-            ...(payload.biography && { biography: payload.biography }),
+            ...(payload.biography !== undefined && { biography: payload.biography }),
           },
         },
       },
