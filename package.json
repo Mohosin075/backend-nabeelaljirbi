@@ -7,7 +7,11 @@
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "postinstall": "npx prisma generate"
+    "postinstall": "npx prisma generate",
+    "db:generate": "npx prisma generate",
+    "migrate:dev": "npx prisma migrate dev",
+    "migrate:prod": "npx prisma migrate deploy",
+    "migrate:status": "npx prisma migrate status"
   },
   "keywords": [],
   "author": "khalid",
