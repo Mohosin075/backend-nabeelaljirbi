@@ -5,12 +5,14 @@ import { slugify } from "../../../utils/slugify";
 import multer from "multer";
 import { fileFilter } from "../../../helpars/file/fileFilter";
 
+import config from "../../../config";
+
 export const s3 = new S3Client({
-  region: "sfo3",
-  endpoint: "https://sfo3.digitaloceanspaces.com",
+  region: config.aws.region || "sfo3",
+  endpoint: `https://${config.aws.region || "sfo3"}.digitaloceanspaces.com`,
   credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+    accessKeyId: config.aws.accessKeyId as string,
+    secretAccessKey: config.aws.secretAccessKey as string,
   },
 });
 

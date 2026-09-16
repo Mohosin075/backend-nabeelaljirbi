@@ -7,8 +7,8 @@ import { fileFilter } from "../file/fileFilter";
 
 // Initialize S3 client
 export const s3Client = new S3Client({
-  region: "sfo3",
-  endpoint: "https://sfo3.digitaloceanspaces.com",
+  region: config.aws.region || "sfo3",
+  endpoint: `https://${config.aws.region || "sfo3"}.digitaloceanspaces.com`,
   credentials: {
     accessKeyId: config.aws.accessKeyId as string,
     secretAccessKey: config.aws.secretAccessKey as string,
