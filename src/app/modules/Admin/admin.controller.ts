@@ -18,7 +18,10 @@ const AdminStats = catchAsync(async (req: Request, res: Response) => {
 
 const getDoctors = catchAsync(async (req: Request, res: Response) => {
   const options = pick(req.query, paginationFields);
-  const filters = pick(req.query, ["searchTerm", "speciality", "clinicId"]);
+  const filters = pick(req.query, ["searchTerm", "search", "speciality", "clinicId"]) as any;
+  if (req.query.search && !filters.searchTerm) {
+    filters.searchTerm = req.query.search;
+  }
 
   const result = await AdminService.getDoctors(filters, options);
 
@@ -32,7 +35,10 @@ const getDoctors = catchAsync(async (req: Request, res: Response) => {
 
 const getPatients = catchAsync(async (req: Request, res: Response) => {
   const options = pick(req.query, paginationFields);
-  const filters = pick(req.query, ["searchTerm"]);
+  const filters = pick(req.query, ["searchTerm", "search"]) as any;
+  if (req.query.search && !filters.searchTerm) {
+    filters.searchTerm = req.query.search;
+  }
 
   const result = await AdminService.getPatients(filters, options);
 
@@ -46,7 +52,10 @@ const getPatients = catchAsync(async (req: Request, res: Response) => {
 
 const getClinics = catchAsync(async (req: Request, res: Response) => {
   const options = pick(req.query, paginationFields);
-  const filters = pick(req.query, ["searchTerm", "adminVerified"]);
+  const filters = pick(req.query, ["searchTerm", "search", "adminVerified"]) as any;
+  if (req.query.search && !filters.searchTerm) {
+    filters.searchTerm = req.query.search;
+  }
 
   const result = await AdminService.getClinics(filters, options);
 

@@ -1768,20 +1768,9 @@ const getClinicDoctor = async (
           speciality: true,
           experience: true,
           about: true,
+          biography: true,
+          licenseNumber: true,
           clinic: true,
-          // workingDays: {
-          //   select: {
-          //     day: true,
-          //     slots: {
-          //       select: {
-          //         startTime: true,
-          //         endTime: true,
-          //         capacity: true,
-          //         isActive: true,
-          //       },
-          //     },
-          //   },
-          // },
         },
       },
       ratingsReceived: {
@@ -1835,7 +1824,10 @@ const getClinicDoctor = async (
         totalConsult,
         upcomingConsult,
         about: doc.doctor?.about,
-        // schedule: doc.doctor?.workingDays,
+        biography: doc.doctor?.biography,
+        phoneNumber: doc.phoneNumber,
+        email: doc.email,
+        licenseNumber: doc.doctor?.licenseNumber,
       };
     }),
   );
@@ -1950,20 +1942,9 @@ const getClinicManagerDoctor = async (
           speciality: true,
           experience: true,
           about: true,
+          biography: true,
+          licenseNumber: true,
           clinic: true,
-          // workingDays: {
-          //   select: {
-          //     day: true,
-          //     slots: {
-          //       select: {
-          //         startTime: true,
-          //         endTime: true,
-          //         capacity: true,
-          //         isActive: true,
-          //       },
-          //     },
-          //   },
-          // },
         },
       },
       ratingsReceived: {
@@ -2017,7 +1998,10 @@ const getClinicManagerDoctor = async (
         totalConsult,
         upcomingConsult,
         about: doc.doctor?.about,
-        // schedule: doc.doctor?.workingDays,
+        biography: doc.doctor?.biography,
+        phoneNumber: doc.phoneNumber,
+        email: doc.email,
+        licenseNumber: doc.doctor?.licenseNumber,
       };
     }),
   );

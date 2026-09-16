@@ -127,6 +127,7 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
       doctor: {
         upsert: {
           create: {
+            about: payload.about,
             speciality: payload.speciality,
             experience: payload.experience ? payload.experience : undefined,
             licenseNumber: payload.licenseNumber,
@@ -136,6 +137,9 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
             biography: payload.biography,
           },
           update: {
+            ...(payload.about !== undefined && {
+              about: payload.about,
+            }),
             ...(payload.speciality && {
               speciality: payload.speciality,
             }),
@@ -179,6 +183,7 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
 
       doctor: {
         select: {
+          about: true,
           speciality: true,
           experience: true,
           licenseNumber: true,

@@ -36,7 +36,12 @@ const getDoctors = async (filters: any, options: IPaginationOptions) => {
   const { searchTerm, speciality, clinicId } = filters;
 
   const andConditions: Prisma.UserWhereInput[] = [
-    { role: UserRole.DOCTOR },
+    {
+      OR: [
+        { role: UserRole.DOCTOR },
+        { doctor: { isNot: null } }
+      ]
+    },
     { status: { not: UserStatus.DELETED } }
   ];
 
@@ -89,6 +94,7 @@ const getDoctors = async (filters: any, options: IPaginationOptions) => {
       profileImage: true,
       email: true,
       phoneNumber: true,
+      createdAt: true,
       doctor: {
         select: {
           about: true,
@@ -101,7 +107,8 @@ const getDoctors = async (filters: any, options: IPaginationOptions) => {
           biography: true,
           clinic: {
             select: {
-              clinicName: true
+              clinicName: true,
+              logo: true
             }
           }
         }
@@ -122,6 +129,7 @@ const getDoctors = async (filters: any, options: IPaginationOptions) => {
     profileImage: user.profileImage,
     email: user.email,
     phoneNumber: user.phoneNumber,
+    createdAt: user.createdAt,
     about: user.doctor?.about,
     speciality: user.doctor?.speciality,
     experience: user.doctor?.experience,
@@ -129,7 +137,9 @@ const getDoctors = async (filters: any, options: IPaginationOptions) => {
     consultFee: user.doctor?.consultFee,
     clinicId: user.doctor?.clinicId,
     joinClinicDate: user.doctor?.joinClinicDate,
-    clinicName: user.doctor?.clinic?.clinicName
+    clinicName: user.doctor?.clinic?.clinicName,
+    clinicLogo: user.doctor?.clinic?.logo,
+    biography: user.doctor?.biography,
   }));
 
   return {
@@ -227,7 +237,12 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
   let { searchTerm, adminVerified } = filters;
 
   const andConditions: Prisma.UserWhereInput[] = [
-    { role: UserRole.CLINIC },
+    {
+      OR: [
+        { role: UserRole.CLINIC },
+        { clinic: { isNot: null } }
+      ]
+    },
     { status: { not: UserStatus.DELETED } }
   ];
 
