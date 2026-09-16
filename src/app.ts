@@ -43,7 +43,7 @@ app.use(express.static("public"));
 // Route handler for the root endpoint
 app.get("/", (req: Request, res: Response) => {
   res.send({
-    message: "Welcome to the Nabeelaljirbi backend API",
+    message: "Welcome to the Nabeelaljirbi backend API / Tested!",
   });
 });
 
