@@ -2393,3 +2393,7 @@
 {"level":"info","message":"Incoming request: GET /api/v1/admin/get-doctor?page=1&limit=10&search=&searchTerm=","service":"default-service-name","timestamp":"2026-09-16 15:23:47"}
 {"level":"info","message":"Incoming request: GET /api/v1/admin/get-clinic?page=1&limit=10&search=","service":"default-service-name","timestamp":"2026-09-16 15:23:50"}
 {"level":"info","message":"Incoming request: GET /api/v1/admin/get-doctor?page=1&limit=10&search=&searchTerm=","service":"default-service-name","timestamp":"2026-09-16 15:23:59"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/get-clinic?page=1&limit=10&search=","service":"default-service-name","timestamp":"2026-09-16 15:28:36"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/get-doctor?page=1&limit=10&search=&searchTerm=","service":"default-service-name","timestamp":"2026-09-16 15:28:36"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/get-patient?page=1&limit=10&search=","service":"default-service-name","timestamp":"2026-09-16 15:28:37"}
+{"level":"info","message":"Incoming request: GET /api/v1/patient-service-fee","service":"default-service-name","timestamp":"2026-09-16 15:28:37"}
