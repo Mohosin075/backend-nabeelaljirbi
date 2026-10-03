@@ -115,6 +115,7 @@ model User {
   purchaseClinicPlatformSubscription  PurchaseClinicPlatformSubscription[]
   patientAdminTransactions            AdminTransaction[]                    @relation("patient")
   clinicAdminTransactions             AdminTransaction[]                    @relation("clinic")
+  agreementAcceptances                UserAgreementAcceptance[]
 
   accessToken  String?
   refreshToken String?
@@ -742,4 +743,45 @@ model AdminTransaction {
 
   @@index([userId])
   @@map("admin_transactions")
+}
+
+model LegalDocument {
+  id                  String   @id @default(cuid())
+  role                UserRole
+  title               String
+  titleAr             String?
+  content             String   @db.Text
+  contentAr           String?  @db.Text
+  version             String
+  effectiveDate       DateTime @default(now())
+  requireReacceptance Boolean  @default(false)
+  isActive            Boolean  @default(true)
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  acceptances         UserAgreementAcceptance[]
+
+  @@unique([role, version])
+  @@index([role, isActive])
+  @@map("legal_documents")
+}
+
+model UserAgreementAcceptance {
+  id              String        @id @default(cuid())
+  userId          String
+  documentId      String
+  documentVersion String
+  role            UserRole
+  acceptedAt      DateTime      @default(now())
+  ipAddress       String?
+  userAgent       String?
+
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  document        LegalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, documentId, documentVersion])
+  @@index([userId, role])
+  @@index([documentId])
+  @@map("user_agreement_acceptances")
 }

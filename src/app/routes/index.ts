@@ -23,6 +23,7 @@ import { PrepaidCardRoutes } from "../modules/PrepaidCard/prepaidCard.routes";
 import { AllowNotificationRoutes } from "../modules/AllowNotification/allowNotification.routes";
 import { AllowAiChatRoutes } from "../modules/AllowAiChat/allowAiChat.routes";
 import { PatientServiceFeeRoutes } from "../modules/PatientServiceFee/patientServiceFee.routes";
+import { LegalDocumentRoutes } from "../modules/LegalDocument/legalDocument.routes";
 
 const router = express.Router();
 
@@ -118,6 +119,10 @@ const moduleRoutes = [
   {
     path: "/patient-service-fee",
     route: PatientServiceFeeRoutes,
+  },
+  {
+    path: "/legal-documents",
+    route: LegalDocumentRoutes,
   }
 ];
 
