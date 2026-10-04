@@ -163,4 +163,16 @@ router.get(
   ClinicController.getDoctorAppointments
 );
 
+router.get(
+  "/join-requests",
+  auth(),
+  ClinicController.getClinicJoinRequests
+);
+
+router.patch(
+  "/join-request/:requestId/status",
+  auth(),
+  ClinicController.respondJoinRequest
+);
+
 export const ClinicRoutes = router;

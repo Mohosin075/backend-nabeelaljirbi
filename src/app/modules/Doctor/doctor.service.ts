@@ -51,6 +51,39 @@ const getDoctorProfile = async (userId: string) => {
               adminVerified: true,
             },
           },
+          doctorClinics: {
+            where: { isActive: true },
+            select: {
+              id: true,
+              clinicId: true,
+              joinedAt: true,
+              clinic: {
+                select: {
+                  id: true,
+                  clinicName: true,
+                  logo: true,
+                  location: true,
+                  contactPhone: true,
+                },
+              },
+            },
+          },
+          joinRequests: {
+            select: {
+              id: true,
+              clinicId: true,
+              status: true,
+              note: true,
+              createdAt: true,
+              clinic: {
+                select: {
+                  id: true,
+                  clinicName: true,
+                  logo: true,
+                },
+              },
+            },
+          },
         },
       },
       ratingsReceived: {
@@ -221,6 +254,7 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
 const addWorkingHours = async (
   userId: string,
   payload: {
+    clinicId?: string;
     day: string;
     slots: {
       startTime: string;
@@ -238,20 +272,26 @@ const addWorkingHours = async (
     throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
   }
 
-  // 1️⃣ Upsert working day
-  const workingDay = await prisma.workingDay.upsert({
+  // 1️⃣ Find or create working day scoped by doctorId, clinicId, day
+  const targetClinicId = payload.clinicId || null;
+
+  let workingDay = await prisma.workingDay.findFirst({
     where: {
-      doctorId_day: {
-        doctorId: doctor.id,
-        day: payload.day as WeekDay,
-      },
-    },
-    create: {
       doctorId: doctor.id,
+      clinicId: targetClinicId,
       day: payload.day as WeekDay,
     },
-    update: {},
   });
+
+  if (!workingDay) {
+    workingDay = await prisma.workingDay.create({
+      data: {
+        doctorId: doctor.id,
+        clinicId: targetClinicId,
+        day: payload.day as WeekDay,
+      },
+    });
+  }
 
   // 2️⃣ Remove existing slots (replace mode)
   await prisma.workingSlot.deleteMany({
@@ -275,11 +315,12 @@ const addWorkingHours = async (
 
   return {
     day: payload.day,
+    clinicId: targetClinicId,
     slots: slotsData,
   };
 };
 
-const getWorkingHoursByDay = async (userId: string) => {
+const getWorkingHoursByDay = async (userId: string, clinicId?: string) => {
   const doctor = await prisma.doctor.findUnique({
     where: { userId },
   });
@@ -288,12 +329,20 @@ const getWorkingHoursByDay = async (userId: string) => {
     throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
   }
 
+  const whereCondition: any = {
+    doctorId: doctor.id,
+  };
+
+  if (clinicId) {
+    whereCondition.clinicId = clinicId;
+  }
+
   const workingDay = await prisma.workingDay.findMany({
-    where: {
-      doctorId: doctor.id,
-    },
+    where: whereCondition,
     select: {
+      id: true,
       day: true,
+      clinicId: true,
       slots: {
         select: {
           id: true,
@@ -308,12 +357,6 @@ const getWorkingHoursByDay = async (userId: string) => {
       },
     },
   });
-
-  if (!workingDay) {
-    return {
-      slots: [],
-    };
-  }
 
   return {
     slots: workingDay,
@@ -520,6 +563,170 @@ const getDoctorInsurances = async (userId: string) => {
   });
 };
 
+const requestJoinClinic = async (
+  userId: string,
+  payload: { clinicId: string; note?: string }
+) => {
+  const doctor = await prisma.doctor.findUnique({
+    where: { userId },
+  });
+
+  if (!doctor) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Doctor profile not found");
+  }
+
+  const clinic = await prisma.clinic.findUnique({
+    where: { id: payload.clinicId },
+  });
+
+  if (!clinic) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Target clinic not found");
+  }
+
+  // 1️⃣ Check active clinic count (Max 3 limit)
+  const activeCount = await prisma.doctorClinic.count({
+    where: {
+      doctorId: doctor.id,
+      isActive: true,
+    },
+  });
+
+  if (activeCount >= 3) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "Doctor has already joined the maximum limit of 3 clinics"
+    );
+  }
+
+  // 2️⃣ Check if doctor is already active in this clinic
+  const existingLink = await prisma.doctorClinic.findFirst({
+    where: {
+      doctorId: doctor.id,
+      clinicId: payload.clinicId,
+      isActive: true,
+    },
+  });
+
+  if (existingLink) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "Doctor is already linked to this clinic"
+    );
+  }
+
+  // 3️⃣ Check if pending request exists
+  const existingPending = await prisma.doctorClinicRequest.findFirst({
+    where: {
+      doctorId: doctor.id,
+      clinicId: payload.clinicId,
+      status: "PENDING",
+    },
+  });
+
+  if (existingPending) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "A join request to this clinic is already pending approval"
+    );
+  }
+
+  // 4️⃣ Create new request
+  const request = await prisma.doctorClinicRequest.create({
+    data: {
+      doctorId: doctor.id,
+      clinicId: payload.clinicId,
+      note: payload.note,
+      status: "PENDING",
+    },
+    include: {
+      clinic: {
+        select: {
+          id: true,
+          clinicName: true,
+          logo: true,
+          location: true,
+        },
+      },
+    },
+  });
+
+  return request;
+};
+
+const getDoctorJoinRequests = async (userId: string) => {
+  const doctor = await prisma.doctor.findUnique({
+    where: { userId },
+  });
+
+  if (!doctor) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
+  }
+
+  const requests = await prisma.doctorClinicRequest.findMany({
+    where: { doctorId: doctor.id },
+    include: {
+      clinic: {
+        select: {
+          id: true,
+          clinicName: true,
+          logo: true,
+          location: true,
+          contactPhone: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const activeClinics = await prisma.doctorClinic.findMany({
+    where: { doctorId: doctor.id, isActive: true },
+    include: {
+      clinic: {
+        select: {
+          id: true,
+          clinicName: true,
+          logo: true,
+          location: true,
+          contactPhone: true,
+        },
+      },
+    },
+    orderBy: { joinedAt: "desc" },
+  });
+
+  return {
+    activeClinics,
+    requests,
+    activeCount: activeClinics.length,
+    maxLimit: 3,
+  };
+};
+
+const cancelJoinRequest = async (userId: string, requestId: string) => {
+  const doctor = await prisma.doctor.findUnique({
+    where: { userId },
+  });
+
+  if (!doctor) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
+  }
+
+  const request = await prisma.doctorClinicRequest.findFirst({
+    where: { id: requestId, doctorId: doctor.id },
+  });
+
+  if (!request) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Join request not found");
+  }
+
+  const updated = await prisma.doctorClinicRequest.update({
+    where: { id: requestId },
+    data: { status: "CANCELLED" },
+  });
+
+  return updated;
+};
+
 export const DoctorService = {
   updateDoctorProfile,
   getDoctorProfile,
@@ -530,4 +737,7 @@ export const DoctorService = {
   updateDoctorInsurance,
   deleteDoctorInsurance,
   getDoctorInsurances,
+  requestJoinClinic,
+  getDoctorJoinRequests,
+  cancelJoinRequest,
 };

@@ -795,7 +795,12 @@ const getClinicDoctors = async (
   // 2️⃣ Build Prisma WHERE conditions
   const andConditions: Prisma.UserWhereInput[] = [
     { role: UserRole.DOCTOR },
-    { doctor: { clinicId } },
+    {
+      OR: [
+        { doctor: { clinicId } },
+        { doctor: { doctorClinics: { some: { clinicId, isActive: true } } } },
+      ],
+    },
   ];
 
   if (consultFee) {
@@ -919,9 +924,24 @@ const getDoctor = async (doctorId: string) => {
               user: true,
             },
           },
+          doctorClinics: {
+            where: { isActive: true },
+            include: {
+              clinic: {
+                include: {
+                  galleries: {
+                    select: { image: true },
+                  },
+                  user: true,
+                },
+              },
+            },
+          },
           workingDays: {
             select: {
+              id: true,
               day: true,
+              clinicId: true,
               slots: {
                 select: {
                   id: true,
@@ -970,6 +990,16 @@ const getDoctor = async (doctorId: string) => {
     clinicCountry: doctorUser.doctor.clinic?.user.country,
     clinicPhoto: doctorUser.doctor.clinic?.galleries ?? [],
     views: doctorUser.doctor.clinic?.views,
+
+    doctorClinics: doctorUser.doctor.doctorClinics.map((dc) => ({
+      id: dc.clinic.id,
+      userId: dc.clinic.userId,
+      clinicName: dc.clinic.clinicName,
+      logo: dc.clinic.logo,
+      location: dc.clinic.location,
+      contactPhone: dc.clinic.contactPhone,
+      galleries: dc.clinic.galleries,
+    })),
 
     rating: Number(averageRating.toFixed(1)),
     reviewCount,

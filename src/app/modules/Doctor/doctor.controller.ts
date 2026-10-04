@@ -122,9 +122,11 @@ const addWorkingHours = catchAsync(async (req: Request, res: Response) => {
 
 const getWorkingHoursByDay = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user.id;
+  const clinicId = req.query.clinicId as string | undefined;
 
   const result = await DoctorService.getWorkingHoursByDay(
     userId,
+    clinicId
   );
 
   sendResponse(res, {
@@ -135,7 +137,46 @@ const getWorkingHoursByDay = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const requestJoinClinic = catchAsync(async (req: Request, res: Response) => {
+  const userId = req.user.id;
+  const payload = req.body;
 
+  const result = await DoctorService.requestJoinClinic(userId, payload);
+
+  sendResponse(res, {
+    statusCode: httpStatus.CREATED,
+    success: true,
+    message: "Join request submitted successfully",
+    data: result,
+  });
+});
+
+const getDoctorJoinRequests = catchAsync(async (req: Request, res: Response) => {
+  const userId = req.user.id;
+
+  const result = await DoctorService.getDoctorJoinRequests(userId);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Join requests retrieved successfully",
+    data: result,
+  });
+});
+
+const cancelJoinRequest = catchAsync(async (req: Request, res: Response) => {
+  const userId = req.user.id;
+  const { requestId } = req.params;
+
+  const result = await DoctorService.cancelJoinRequest(userId, requestId);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Join request cancelled successfully",
+    data: result,
+  });
+});
 
 const getAppointments = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.id;
@@ -254,4 +295,7 @@ export const DoctorController = {
   updateDoctorInsurance,
   deleteDoctorInsurance,
   getDoctorInsurances,
+  requestJoinClinic,
+  getDoctorJoinRequests,
+  cancelJoinRequest,
 };

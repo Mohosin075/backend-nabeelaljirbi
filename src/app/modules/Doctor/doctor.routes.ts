@@ -70,4 +70,22 @@ router.delete(
   DoctorController.deleteDoctorInsurance
 );
 
+router.post(
+  "/join-request",
+  auth(),
+  DoctorController.requestJoinClinic
+);
+
+router.get(
+  "/join-requests",
+  auth(),
+  DoctorController.getDoctorJoinRequests
+);
+
+router.delete(
+  "/join-request/:requestId",
+  auth(),
+  DoctorController.cancelJoinRequest
+);
+
 export const DoctorRoutes = router;

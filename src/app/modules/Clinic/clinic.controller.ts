@@ -459,6 +459,34 @@ const getClinicManagerDoctor = catchAsync(
   },
 );
 
+const getClinicJoinRequests = catchAsync(async (req: Request, res: Response) => {
+  const userId = req.user.id;
+
+  const result = await ClinicService.getClinicJoinRequests(userId);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Join requests retrieved successfully",
+    data: result,
+  });
+});
+
+const respondJoinRequest = catchAsync(async (req: Request, res: Response) => {
+  const userId = req.user.id;
+  const { requestId } = req.params;
+  const payload = req.body;
+
+  const result = await ClinicService.respondJoinRequest(userId, requestId, payload);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: `Join request ${payload.status ? payload.status.toLowerCase() : 'processed'} successfully`,
+    data: result,
+  });
+});
+
 export const ClinicController = {
   updateClinicProfile,
   getClinicProfile,
@@ -484,4 +512,6 @@ export const ClinicController = {
   getDoctorAppointments,
   getClinics,
   getManagerBookingHistory,
+  getClinicJoinRequests,
+  respondJoinRequest,
 };

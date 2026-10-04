@@ -1710,7 +1710,12 @@ const getClinicDoctor = async (
   // 1️⃣ Build Prisma WHERE conditions
   const andConditions: Prisma.UserWhereInput[] = [
     { role: UserRole.DOCTOR },
-    { doctor: { clinicId: clinic.id } },
+    {
+      OR: [
+        { doctor: { clinicId: clinic.id } },
+        { doctor: { doctorClinics: { some: { clinicId: clinic.id, isActive: true } } } },
+      ],
+    },
   ];
 
   if (consultFee) {
@@ -1886,7 +1891,12 @@ const getClinicManagerDoctor = async (
   // 1️⃣ Build Prisma WHERE conditions
   const andConditions: Prisma.UserWhereInput[] = [
     { role: UserRole.DOCTOR },
-    { doctor: { clinicId: clinic.id } },
+    {
+      OR: [
+        { doctor: { clinicId: clinic.id } },
+        { doctor: { doctorClinics: { some: { clinicId: clinic.id, isActive: true } } } },
+      ],
+    },
   ];
 
   if (consultFee) {
@@ -2369,6 +2379,137 @@ const addClinicManager = async (
   });
 };
 
+const getClinicByUserId = async (userId: string) => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: {
+      clinic: true,
+      manager: {
+        include: {
+          clinic: true,
+        },
+      },
+    },
+  });
+
+  if (!user) {
+    throw new ApiError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  if (user.clinic) return user.clinic;
+  if (user.manager && user.manager.length > 0 && user.manager[0].clinic) {
+    return user.manager[0].clinic;
+  }
+
+  throw new ApiError(httpStatus.NOT_FOUND, "Clinic profile not found for this user");
+};
+
+const getClinicJoinRequests = async (userId: string) => {
+  const clinic = await getClinicByUserId(userId);
+
+  const requests = await prisma.doctorClinicRequest.findMany({
+    where: { clinicId: clinic.id },
+    include: {
+      doctor: {
+        select: {
+          id: true,
+          userId: true,
+          speciality: true,
+          qualifications: true,
+          experience: true,
+          licenseNumber: true,
+          consultFee: true,
+          user: {
+            select: {
+              fullName: true,
+              profileImage: true,
+              phoneNumber: true,
+              email: true,
+            },
+          },
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return requests;
+};
+
+const respondJoinRequest = async (
+  userId: string,
+  requestId: string,
+  payload: { status: "ACCEPTED" | "REJECTED"; note?: string }
+) => {
+  const clinic = await getClinicByUserId(userId);
+
+  const request = await prisma.doctorClinicRequest.findFirst({
+    where: { id: requestId, clinicId: clinic.id },
+  });
+
+  if (!request) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Join request not found");
+  }
+
+  if (payload.status === "ACCEPTED") {
+    // 1️⃣ Validate Max 3 Clinics limit for doctor
+    const activeCount = await prisma.doctorClinic.count({
+      where: {
+        doctorId: request.doctorId,
+        isActive: true,
+      },
+    });
+
+    if (activeCount >= 3) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        "Doctor has reached the maximum limit of 3 linked clinics"
+      );
+    }
+
+    // 2️⃣ Create active link in DoctorClinic
+    await prisma.doctorClinic.upsert({
+      where: {
+        doctorId_clinicId: {
+          doctorId: request.doctorId,
+          clinicId: clinic.id,
+        },
+      },
+      create: {
+        doctorId: request.doctorId,
+        clinicId: clinic.id,
+        isActive: true,
+      },
+      update: {
+        isActive: true,
+      },
+    });
+
+    // 3️⃣ Update primary clinicId on Doctor if null
+    await prisma.doctor.updateMany({
+      where: {
+        id: request.doctorId,
+        clinicId: null,
+      },
+      data: {
+        clinicId: clinic.id,
+        joinClinicDate: new Date(),
+      },
+    });
+  }
+
+  // Update request status
+  const updatedRequest = await prisma.doctorClinicRequest.update({
+    where: { id: requestId },
+    data: {
+      status: payload.status,
+      note: payload.note,
+    },
+  });
+
+  return updatedRequest;
+};
+
 export const ClinicService = {
   updateClinicProfile,
   getClinicProfile,
@@ -2395,4 +2536,6 @@ export const ClinicService = {
   getClinics,
   addClinicManager,
   getManagerBookingHistory,
+  getClinicJoinRequests,
+  respondJoinRequest,
 };

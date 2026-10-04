@@ -33,6 +33,13 @@ enum BookingStatus {
   NOT_SHOW
 }
 
+enum JoinRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELLED
+}
+
 enum WeekDay {
   SUNDAY
   MONDAY
@@ -162,7 +169,7 @@ model Doctor {
   experience     String?
   licenseNumber  String?
   consultFee     Float?
-  clinicId       String? // clinic id
+  clinicId       String? // primary clinic id (legacy compatibility)
   joinClinicDate DateTime?
   biography      String?
   clinic         Clinic?   @relation("DoctorClinic", fields: [clinicId], references: [id])
@@ -172,9 +179,11 @@ model Doctor {
   updatedAt DateTime @updatedAt
 
   workingDays         WorkingDay[]
-  bookingsAsDoctor    BookingAppointment[] @relation("DoctorBooking")
+  bookingsAsDoctor    BookingAppointment[]  @relation("DoctorBooking")
   doctorInsurances    DoctorInsurance[]
   doctorNotifications DoctorNotification[]
+  doctorClinics       DoctorClinic[]
+  joinRequests        DoctorClinicRequest[]
 
   @@index([clinicId])
   @@map("doctors")
@@ -199,16 +208,20 @@ model Manager {
 model WorkingDay {
   id       String  @id @default(cuid())
   doctorId String
+  clinicId String?
   day      WeekDay
   isActive Boolean @default(true)
 
   doctor Doctor        @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  clinic Clinic?       @relation(fields: [clinicId], references: [id], onDelete: Cascade)
   slots  WorkingSlot[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([doctorId, day])
+  @@unique([doctorId, clinicId, day])
+  @@index([doctorId])
+  @@index([clinicId])
   @@map("working_days")
 }
 
@@ -253,8 +266,11 @@ model Clinic {
   specialists         ClinicSpecialist[]
   insurances          ClinicInsurance[]
   galleries           PhotoGallery[]
-  doctors             Doctor[]             @relation("DoctorClinic") // doctors in this clinic
-  bookingsAsClinic    BookingAppointment[] @relation("ClinicBooking")
+  doctors             Doctor[]              @relation("DoctorClinic") // doctors in this clinic
+  linkedDoctors       DoctorClinic[]
+  joinRequests        DoctorClinicRequest[]
+  workingDays         WorkingDay[]
+  bookingsAsClinic    BookingAppointment[]  @relation("ClinicBooking")
   manager             Manager[]
   clinicNotifications ClinicNotification[]
 
@@ -262,6 +278,43 @@ model Clinic {
   updatedAt DateTime @updatedAt
 
   @@map("clinics")
+}
+
+model DoctorClinicRequest {
+  id        String            @id @default(cuid())
+  doctorId  String
+  clinicId  String
+  status    JoinRequestStatus @default(PENDING)
+  note      String?
+
+  doctor Doctor @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  clinic Clinic @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([doctorId])
+  @@index([clinicId])
+  @@map("doctor_clinic_requests")
+}
+
+model DoctorClinic {
+  id       String   @id @default(cuid())
+  doctorId String
+  clinicId String
+  isActive Boolean  @default(true)
+  joinedAt DateTime @default(now())
+
+  doctor Doctor @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  clinic Clinic @relation(fields: [clinicId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([doctorId, clinicId])
+  @@index([doctorId])
+  @@index([clinicId])
+  @@map("doctor_clinics")
 }
 
 model ClinicSpecialist {
