@@ -8,6 +8,7 @@ import { DoctorService } from "./doctor.service";
 
 import { fileUploadToS3 } from "../../../helpars/s3Bucket/fileUploadToS3";
 import ApiError from "../../../errors/ApiErrors";
+import { doctorValidation } from "./doctor.validation";
 
 const updateDoctorProfile = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.id;
@@ -50,12 +51,27 @@ const updateDoctorProfile = catchAsync(async (req: Request, res: Response) => {
     biography = uploadedUrl;
   }
 
-  // ✅ Parse body
-  let payload;
+  // ✅ Parse body (multipart sends the profile as a JSON string in `data`)
+  let rawPayload: unknown;
   if (req.body.data) {
-    payload = JSON.parse(req.body.data);
+    try {
+      rawPayload = JSON.parse(req.body.data);
+    } catch {
+      throw new ApiError(httpStatus.BAD_REQUEST, "Invalid profile data format");
+    }
   } else {
-    payload = req.body;
+    rawPayload = req.body;
+  }
+
+  // ✅ Validate (throws ZodError -> 400 with field-level errorMessages)
+  const payload: Record<string, any> =
+    await doctorValidation.updateDoctorProfileValidationSchema.parseAsync(
+      rawPayload ?? {}
+    );
+
+  // Prisma stores experience as text; some clients send a number.
+  if (typeof payload.experience === "number") {
+    payload.experience = String(payload.experience);
   }
 
   const doctorData = {

@@ -158,6 +158,7 @@ model Doctor {
 
   about          String?
   speciality     String?
+  qualifications String?
   experience     String?
   licenseNumber  String?
   consultFee     Float?

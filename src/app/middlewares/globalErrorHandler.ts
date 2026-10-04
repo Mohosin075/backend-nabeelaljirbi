@@ -227,7 +227,7 @@ const GlobalErrorHandler = (
     success: false,
     message,
     errorMessages,
-    err: error,
+    err: config.env !== "production" ? error : undefined,
     stack: config.env !== "production" ? error?.stack : undefined,
   });
 };

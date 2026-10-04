@@ -105,6 +105,7 @@ const getDoctors = async (filters: any, options: IPaginationOptions) => {
           clinicId: true,
           joinClinicDate: true,
           biography: true,
+          qualifications: true,
           clinic: {
             select: {
               clinicName: true,
@@ -140,6 +141,7 @@ const getDoctors = async (filters: any, options: IPaginationOptions) => {
     clinicName: user.doctor?.clinic?.clinicName,
     clinicLogo: user.doctor?.clinic?.logo,
     biography: user.doctor?.biography,
+    qualifications: user.doctor?.qualifications,
   }));
 
   return {

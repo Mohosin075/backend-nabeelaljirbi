@@ -38,6 +38,7 @@ const getDoctorProfile = async (userId: string) => {
           joinClinicDate: true,
           createdAt: true,
           biography: true,
+          qualifications: true,
           clinic: {
             select: {
               logo: true,
@@ -97,13 +98,26 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
   const isClinicChanging =
     Boolean(payload.clinicId) && user.doctor?.clinicId !== payload.clinicId;
 
+  const parsedConsultFee = Number(payload.consultFee);
   const consultFeeVal =
     payload.consultFee !== undefined &&
     payload.consultFee !== null &&
-    payload.consultFee !== ""
-      ? Number(payload.consultFee)
+    payload.consultFee !== "" &&
+    !isNaN(parsedConsultFee)
+      ? parsedConsultFee
       : undefined;
 
+  // `biography` is overloaded: older app builds store the qualifications JSON
+  // there, while the CV upload screen stores an S3 URL there. Only mirror it into
+  // `qualifications` when it is NOT a URL, so a CV upload never wipes them.
+  const isUrl = (v: unknown) =>
+    typeof v === "string" && /^https?:\/\//i.test(v.trim());
+  const qualificationsVal: string | null | undefined =
+    payload.qualifications !== undefined
+      ? payload.qualifications
+      : payload.biography !== undefined && !isUrl(payload.biography)
+        ? payload.biography
+        : undefined;
   const updatedUser = await prisma.user.update({
     where: { id: userId },
     data: {
@@ -129,6 +143,7 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
           create: {
             about: payload.about,
             speciality: payload.speciality,
+            qualifications: qualificationsVal ?? undefined,
             experience: payload.experience ? payload.experience : undefined,
             licenseNumber: payload.licenseNumber,
             consultFee: consultFeeVal !== undefined ? consultFeeVal : undefined,
@@ -142,6 +157,9 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
             }),
             ...(payload.speciality && {
               speciality: payload.speciality,
+            }),
+            ...(qualificationsVal !== undefined && {
+              qualifications: qualificationsVal,
             }),
             ...(payload.experience && {
               experience: payload.experience,
@@ -191,6 +209,7 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
           clinicId: true,
           joinClinicDate: true,
           biography: true,
+          qualifications: true,
         },
       },
     },

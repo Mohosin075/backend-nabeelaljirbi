@@ -962,6 +962,7 @@ const getDoctor = async (doctorId: string) => {
     experience: doctorUser.doctor.experience,
     consultFee: doctorUser.doctor.consultFee,
     biography: doctorUser.doctor.biography,
+    qualifications: doctorUser.doctor.qualifications,
     profileImage: doctorUser.profileImage,
 
     clinicName: doctorUser.doctor.clinic?.clinicName,

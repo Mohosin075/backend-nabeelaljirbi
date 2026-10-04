@@ -15,15 +15,29 @@ const handleClientError = (error: Prisma.PrismaClientKnownRequestError) => {
       },
     ];
   } else if (error.code === "P2003") {
-    if (error.message.includes("delete()` invocation:")) {
-      message = "Delete failed";
-      errors = [
-        {
-          path: "",
-          message,
-        },
-      ];
-    }
+    message = "Foreign key constraint failed";
+    errors = [
+      {
+        path: "",
+        message,
+      },
+    ];
+  } else if (error.code === "P2022") {
+    message = `Database column missing: ${error.meta?.column || error.message}`;
+    errors = [
+      {
+        path: String(error.meta?.column || ""),
+        message,
+      },
+    ];
+  } else {
+    message = error.message || "A database error occurred";
+    errors = [
+      {
+        path: "",
+        message,
+      },
+    ];
   }
 
   return {
