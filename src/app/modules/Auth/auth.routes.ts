@@ -5,6 +5,8 @@ import { authValidation } from "./auth.validation";
 import auth from "../../middlewares/auth";
 
 
+import validateRequest from "../../middlewares/validateRequest";
+
 const router = express.Router();
 
 router.post("/send-otp", AuthController.sendOTP);
@@ -13,6 +15,23 @@ router.post("/verify-otp", AuthController.verifyUserByOTP);
 
 router.get("/refresh-token", AuthController.refreshToken);
 
+router.post(
+  "/admin-login",
+  validateRequest(authValidation.adminLoginValidationSchema),
+  AuthController.adminLogin
+);
+
+router.post(
+  "/forgot-password",
+  validateRequest(authValidation.forgotPasswordValidationSchema),
+  AuthController.forgotPassword
+);
+
+router.post(
+  "/reset-password",
+  validateRequest(authValidation.resetPasswordValidationSchema),
+  AuthController.resetPassword
+);
 
 router.delete("/delete-account", auth(), AuthController.deleteUserAccount);
 

@@ -26,8 +26,11 @@ export default {
     refresh_token_expires_in: process.env.REFRESH_TOKEN_EXPIRES_IN,
   },
   emailSender: {
-    email: process.env.EMAIL,
-    app_pass: process.env.APP_PASS,
+    email: process.env.EMAIL || process.env.EMAIL_USER,
+    app_pass: process.env.APP_PASS || process.env.EMAIL_PASS,
+    host: process.env.EMAIL_HOST || "smtp.gmail.com",
+    port: Number(process.env.EMAIL_PORT) || 587,
+    from: process.env.EMAIL_FROM || process.env.EMAIL || process.env.EMAIL_USER,
   },
   stripe: {
     stripe_secret_key: process.env.STRIPE_SECRET_KEY,

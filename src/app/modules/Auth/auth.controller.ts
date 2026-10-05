@@ -74,9 +74,52 @@ const deleteUserAccount = catchAsync(async (req: Request, res: Response) => {
   })
 })
 
+const adminLogin = catchAsync(async (req: Request, res: Response) => {
+  const result = await AuthServices.adminLogin(req.body);
+
+  res.cookie("token", result.accessToken, {
+    secure: config.env === "production",
+    httpOnly: true,
+    sameSite: "none",
+    maxAge: 1000 * 60 * 60 * 24 * 365,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Admin login successfully",
+    data: result,
+  });
+});
+
+const forgotPassword = catchAsync(async (req: Request, res: Response) => {
+  const result = await AuthServices.forgotPassword(req.body);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Password reset instructions sent successfully",
+    data: result,
+  });
+});
+
+const resetPassword = catchAsync(async (req: Request, res: Response) => {
+  const result = await AuthServices.resetPassword(req.body);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Password reset successfully",
+    data: result,
+  });
+});
+
 export const AuthController = {
   sendOTP,
   verifyUserByOTP,
   refreshToken,
-  deleteUserAccount
+  deleteUserAccount,
+  adminLogin,
+  forgotPassword,
+  resetPassword,
 };

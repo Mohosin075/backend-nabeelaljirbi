@@ -85,6 +85,9 @@ model User {
   address          String?
   profileImage     String?
   email            String?
+  password         String?
+  passwordResetToken   String?
+  passwordResetExpires DateTime?
   profileCompleted Boolean   @default(false)
   banned           Boolean   @default(false)
   serviceFree      Float     @default(0)

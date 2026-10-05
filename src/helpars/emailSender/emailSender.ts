@@ -14,7 +14,7 @@ const emailSender = async (subject: string, email: string, html: string) => {
   const emailTransport = transporter;
 
   const mailOptions = {
-    from: `"My Financial Trading" <${config.emailSender.email}>`,
+    from: `"Salama Healthcare" <${config.emailSender.email}>`,
     to: email,
     subject,
     html,

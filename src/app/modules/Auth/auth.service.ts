@@ -8,6 +8,8 @@ import { jwtHelpers } from "../../../utils/jwtHelpers";
 
 import Twilio from "twilio";
 import { generateReferralCode } from "../../../helpars/referralles";
+import emailSender from "../../../helpars/emailSender/emailSender";
+import { otpEmail } from "../../../emails/otpEmail";
 
 const client = Twilio(config.twilio.accountSid, config.twilio.authToken);
 
@@ -286,10 +288,165 @@ const deleteAccout = async (userId: string) => {
 
 }
 
+const adminLogin = async (payload: { email: string; password: string }) => {
+  const { email, password } = payload;
+  const cleanEmail = email.trim();
+
+  const user = await prisma.user.findFirst({
+    where: {
+      role: 'ADMIN',
+      email: {
+        equals: cleanEmail,
+        mode: 'insensitive',
+      },
+    },
+  });
+
+  if (!user) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Admin account not found with this email");
+  }
+
+  if (user.banned || user.status !== 'ACTIVE') {
+    throw new ApiError(httpStatus.FORBIDDEN, "Admin account is inactive or banned");
+  }
+
+  if (!user.password) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "Admin password is not initialized. Please request a password reset."
+    );
+  }
+
+  const isPasswordValid = await bcrypt.compare(password, user.password);
+  if (!isPasswordValid) {
+    throw new ApiError(httpStatus.UNAUTHORIZED, "Invalid password");
+  }
+
+  const { accessToken, refreshToken } = generateTokens(user, 'ADMIN');
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { accessToken, refreshToken },
+  });
+
+  return {
+    message: "Admin login successfully",
+    accessToken,
+    refreshToken,
+    role: 'ADMIN',
+    user: {
+      id: user.id,
+      fullName: user.fullName,
+      email: user.email,
+      phoneNumber: user.phoneNumber,
+    },
+  };
+};
+
+const forgotPassword = async (payload: { emailOrPhone: string }) => {
+  const { emailOrPhone } = payload;
+  const cleanInput = emailOrPhone.trim();
+
+  const user = await prisma.user.findFirst({
+    where: {
+      role: 'ADMIN',
+      OR: [
+        { email: { equals: cleanInput, mode: 'insensitive' } },
+        { phoneNumber: cleanInput },
+      ],
+    },
+  });
+
+  if (!user) {
+    throw new ApiError(httpStatus.NOT_FOUND, "No admin account found with provided email or phone");
+  }
+
+  const resetToken = Math.floor(100000 + Math.random() * 900000).toString();
+  const resetExpires = new Date(Date.now() + 15 * 60 * 1000);
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      passwordResetToken: resetToken,
+      passwordResetExpires: resetExpires,
+    },
+  });
+
+  console.log(`========================================`);
+  console.log(`[ADMIN FORGOT PASSWORD OTP GENERATED]`);
+  console.log(`👤 Admin Account : ${user.email || user.phoneNumber}`);
+  console.log(`🔑 RESET CODE     : ${resetToken}`);
+  console.log(`========================================`);
+
+  if (user.email) {
+    try {
+      await emailSender(
+        "Admin Password Reset Code",
+        user.email,
+        otpEmail(resetToken)
+      );
+      console.log(`[Email Reset OTP Sent] -> ${user.email}`);
+    } catch (e) {
+      console.error("Failed to send reset email via Nodemailer:", e);
+    }
+  }
+
+  if (user.phoneNumber && user.phoneNumber.startsWith("+")) {
+    try {
+      await client.verify.v2
+        .services(`${config.twilio.serviceSid}`)
+        .verifications.create({ to: user.phoneNumber, channel: 'sms' });
+      console.log(`[SMS Reset OTP Sent via Twilio] -> ${user.phoneNumber}`);
+    } catch (e) {
+      console.error("Twilio SMS send error (skipped):", e);
+    }
+  }
+
+  return {
+    message: "Password reset token sent successfully. Please check your email or phone.",
+  };
+};
+
+const resetPassword = async (payload: { token: string; newPassword: string }) => {
+  const { token, newPassword } = payload;
+
+  const user = await prisma.user.findFirst({
+    where: {
+      role: 'ADMIN',
+      passwordResetToken: token,
+      passwordResetExpires: {
+        gt: new Date(),
+      },
+    },
+  });
+
+  if (!user) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Invalid or expired password reset token");
+  }
+
+  const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      password: hashedPassword,
+      passwordResetToken: null,
+      passwordResetExpires: null,
+    },
+  });
+
+  return {
+    message: "Password reset successfully. You can now login with your new password.",
+  };
+};
+
 // update code
 export const AuthServices = {
   sendOTP,
   verifyUserByOTP,
   refreshToken,
-  deleteAccout
+  deleteAccout,
+  adminLogin,
+  forgotPassword,
+  resetPassword,
 };

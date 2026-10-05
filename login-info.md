@@ -3,7 +3,7 @@ DOCTOR	+8801744331872	doctor@gmail.com	ACTIVE
 PATIENT	+8801744331873	patient@gmail.com	ACTIVE
 CLINIC	+8801744331874	clinic@gmail.com	ACTIVE
 MANAGER	+8801744331875	manager@gmail.com	ACTIVE
-SUPER ADMIN	+8801981381386	web.mohosin@gmail.com	ACTIVE
+SUPER ADMIN	+8801981381386	web.mohosin@gmail.com pass : admin123456	ACTIVE
 
 
 
