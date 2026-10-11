@@ -74,10 +74,29 @@ const completeBooking = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const rejectBooking = catchAsync(async (req: Request, res: Response) => {
+  const { appointmentId } = req.params;
+  const { reason } = req.body;
+
+  const result = await BookingService.rejectBooking(
+    appointmentId,
+    reason,
+    req.user?.role || "CLINIC"
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Booking request rejected successfully. Frozen funds released.",
+    data: result,
+  });
+});
+
 export const BookingController = {
   createBooking,
   getBookings,
   confirmBooking,
+  rejectBooking,
   cancelBooking,
   completeBooking,
 };

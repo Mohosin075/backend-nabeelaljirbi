@@ -7,6 +7,7 @@ import { IPaginationOptions } from "../../../interfaces/paginations";
 import { generateTokens } from "../Auth/auth.service";
 import { BookingSchedulerService } from "../../jobs/services/bookingScheduler.service";
 import { Notification } from "../Notification/notification.service";
+import { BookingService } from "../Booking/booking.service";
 
 interface DoctorFilters {
   search?: string; // name or speciality
@@ -1100,137 +1101,17 @@ const updateAppointmentStatus = async (
         "Appointment is already confirmed",
       );
     }
+    return await BookingService.confirmBooking(bookingId, userId);
+  }
 
-    if (appointment.status === BookingStatus.COMPLETE) {
-      throw new ApiError(
-        httpStatus.BAD_REQUEST,
-        "Appointment is already completed",
-      );
+  if (status === BookingStatus.REJECTED) {
+    if (appointment.status === BookingStatus.PENDING) {
+      return await BookingService.rejectBooking(bookingId, undefined, "CLINIC");
     }
-
-    if (clinic.user.wallet < clinic.user.serviceFree) {
-      throw new ApiError(httpStatus.BAD_REQUEST, "Insufficient wallet balance");
-    }
-
-    const updateBooking = await prisma.$transaction(async (tx) => {
-      // Clinic wallet decrement
-      await tx.user.update({
-        where: { id: clinic.userId },
-        data: {
-          wallet: {
-            decrement: clinic.user.serviceFree,
-          },
-        },
-      });
-
-      // Admin wallet increment
-      await tx.user.update({
-        where: { id: adminUser.id },
-        data: {
-          wallet: {
-            increment: clinic.user.serviceFree,
-          },
-        },
-      });
-
-      //  clinic service free
-      await tx.topUp.create({
-        data: {
-          userId: clinic.userId,
-          amount: clinic.user.serviceFree,
-          appointmentId: bookingId,
-          type: TopUpType.BOOKING,
-        },
-      });
-
-      // Admin service free
-      await tx.topUp.create({
-        data: {
-          userId: adminUser.id,
-          amount: clinic.user.serviceFree,
-          appointmentId: bookingId,
-          type: TopUpType.BOOKING,
-        },
-      });
-
-      return await tx.bookingAppointment.update({
-        where: { id: bookingId },
-        data: {
-          status: status,
-          clinicServiceFee: clinic.user.serviceFree,
-        },
-      });
-    });
-
-    // Schedule CONFIRMED_TIMEOUT job — fires 30 min after the doctor's slot endTime.
-    // If clinic does not update visit status by then, appointment auto-closes
-    // and admin retains all fees.
-    try {
-      const clinicForTimeout = await prisma.clinic.findUnique({
-        where: { userId: userId },
-        select: { id: true },
-      });
-      const adminForTimeout = await prisma.user.findUnique({
-        where: { phoneNumber: `${process.env.ADMIN_PHONE_NUMBER}` },
-        select: { id: true },
-      });
-
-      if (clinicForTimeout && adminForTimeout) {
-        await BookingSchedulerService.scheduleConfirmedBookingTimeout({
-          appointmentId: updateBooking.id,
-          patientId: updateBooking.patientId,
-          clinicId: clinicForTimeout.id,
-          clinicUserId: clinic.userId,
-          adminUserId: adminForTimeout.id,
-          patientServiceFee: updateBooking.patientServiceFee,
-          clinicServiceFee: updateBooking.clinicServiceFee,
-          consultDate: updateBooking.consultDate,
-          endTime: updateBooking.endTime!,
-        });
-        console.log(`⏳ Scheduled CONFIRMED_TIMEOUT for appointment ${bookingId}`);
-      }
-    } catch (error) {
-      console.error(`⚠️ Error scheduling CONFIRMED_TIMEOUT for ${bookingId}:`, error);
-      // Non-fatal — confirmation already succeeded
-    }
-
-    // Cancel the PENDING_TIMEOUT job (clinic has now confirmed)
-    try {
-      await BookingSchedulerService.cancelPendingBookingTimeout(bookingId);
-      console.log(`✅ Cancelled PENDING_TIMEOUT for appointment ${bookingId}`);
-    } catch (error) {
-      console.error(`⚠️ Error cancelling PENDING_TIMEOUT for ${bookingId}:`, error);
-    }
-
-    // Schedule reminder notifications (Redis + BullMQ) for 24h and 3h before appointment
-    try {
-      await BookingSchedulerService.scheduleBookingNotifications({
-        appointmentId: updateBooking.id,
-        patientId: updateBooking.patientId,
-        doctorId: updateBooking.doctorId,
-        clinicId: updateBooking.clinicId,
-        consultDate: updateBooking.consultDate,
-        startTime: updateBooking.startTime!,
-        endTime: updateBooking.endTime!,
-        status: updateBooking.status,
-      });
-      console.log(`✅ Scheduled reminder notifications for appointment ${bookingId}`);
-    } catch (error) {
-      console.error(`⚠️ Error scheduling reminder notifications for appointment ${bookingId}:`, error);
-      // Don't throw error - confirmation is successful even if notification scheduling fails
-    }
-
-    // Patient notification
-    await Notification.PatientNotification(
-      updateBooking.id,
-      updateBooking.patientId,
-      'APPOINTMENT_CONFIRMED',
-      'Appointment Confirmed',
-      `Your appointment with Dr. ${appointment.doctor?.user?.fullName || 'the doctor'} at ${appointment.clinic?.clinicName || 'the clinic'} has been confirmed for ${new Date(updateBooking.consultDate).toLocaleDateString()} at ${updateBooking.startTime}.`,
-      patient.user.fcmToken as string,
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      `Cannot reject appointment with status ${appointment.status}`,
     );
-
-    return updateBooking;
   }
 
   const updatedBooking = await prisma.bookingAppointment.update({

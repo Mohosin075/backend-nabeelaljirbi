@@ -23,7 +23,15 @@ router.get(
 router.patch(
   "/:appointmentId/confirm",
   auth(UserRole.DOCTOR, UserRole.CLINIC, UserRole.ADMIN),
+  validateRequest(bookingValidation.approveBookingValidationSchema),
   BookingController.confirmBooking
+);
+
+router.patch(
+  "/:appointmentId/reject",
+  auth(UserRole.CLINIC, UserRole.ADMIN),
+  validateRequest(bookingValidation.rejectBookingValidationSchema),
+  BookingController.rejectBooking
 );
 
 router.patch(

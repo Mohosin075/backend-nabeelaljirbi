@@ -31,6 +31,7 @@ enum BookingStatus {
   ARRIVED
   NOT_UPDATED
   NOT_SHOW
+  REJECTED
 }
 
 enum JoinRequestStatus {
@@ -100,6 +101,7 @@ model User {
 
   // Wallet system 
   wallet                 Float   @default(0)
+  frozenWallet           Float   @default(0)
   stripeAccountId        String?
   stripePayoutsEnabled   Boolean @default(false)
   stripeDetailsSubmitted Boolean @default(false)
@@ -246,7 +248,7 @@ model WorkingSlot {
 
   workingDay WorkingDay @relation(fields: [workingDayId], references: [id], onDelete: Cascade)
 
-  // appointments BookingAppointment[]
+  appointments BookingAppointment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -279,6 +281,9 @@ model Clinic {
   verificationReviewedAt  DateTime?
   views         Int     @default(0)
   trial         Boolean @default(true)
+  collectionMode        String  @default("MODE_A")
+  advanceBookingDays    Int     @default(14)
+  serviceFeePercentage  Float   @default(10.0)
 
   specialists         ClinicSpecialist[]
   insurances          ClinicInsurance[]
@@ -463,8 +468,8 @@ model BookingAppointment {
   patientId String
   patient   Patient @relation("PatientBooking", fields: [patientId], references: [id], onDelete: Cascade)
 
-  // workingSlotId String
-  // workingSlot   WorkingSlot @relation(fields: [workingSlotId], references: [id], onDelete: Cascade)
+  workingSlotId String?
+  workingSlot   WorkingSlot? @relation(fields: [workingSlotId], references: [id], onDelete: SetNull)
 
   consultDate          DateTime
   startTime            String?
@@ -478,6 +483,21 @@ model BookingAppointment {
 
   refundPatient Boolean @default(false)
   refundClinic  Boolean @default(false)
+
+  // Booking Flow Phase 1 fields
+  holdAmount                 Float   @default(0)
+  collectionMode             String  @default("MODE_A")
+  consultFee                 Float   @default(0)
+  serviceFeePercentage       Float   @default(0)
+  serviceFeeAmount           Float   @default(0)
+  totalAmount                Float   @default(0)
+  bookedFor                  String  @default("SELF")
+  familyMemberName           String?
+  familyMemberRelation       String?
+  approximateEstimatedTime   String?
+  rejectionReason            String?
+  cancelledBy                String?
+  cancellationReason         String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

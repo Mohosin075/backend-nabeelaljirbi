@@ -5,6 +5,7 @@ import catchAsync from "../../../shared/catchAsync";
 import pick from "../../../shared/pick";
 import sendResponse from "../../../shared/sendResponse";
 import { PatientService } from "./patient.service";
+import { BookingService } from "../Booking/booking.service";
 import { fileUploadToS3 } from "../../../helpars/s3Bucket/fileUploadToS3";
 
 const updatePatientProfile = catchAsync(async (req: Request, res: Response) => {
@@ -145,15 +146,30 @@ const getDoctor = catchAsync(async (req: Request, res: Response) => {
 
 const bookingAppointment = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.id;
+  const {
+    clinicId,
+    doctorId,
+    workingSlotId,
+    consultDate,
+    bookedFor,
+    familyMemberName,
+    familyMemberRelation,
+  } = req.body;
 
-  const { clinicId, doctorId, workingSlotId, consultDate } = req.body;
-
-  const result = await PatientService.bookingAppointment(userId!, clinicId, doctorId, workingSlotId, consultDate);
+  const result = await BookingService.createBooking(userId!, {
+    clinicId,
+    doctorId,
+    workingSlotId,
+    consultDate,
+    bookedFor,
+    familyMemberName,
+    familyMemberRelation,
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "Appointment booked successfully",
+    message: "Booking request sent successfully",
     data: result,
   });
 });
