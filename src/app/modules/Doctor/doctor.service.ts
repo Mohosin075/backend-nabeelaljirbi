@@ -1,4 +1,4 @@
-import { Prisma, UserRole, WeekDay } from "@prisma/client";
+import { BookingStatus, Prisma, UserRole, WeekDay } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
 import { paginationHelpers } from "../../../utils/paginationHelper";
@@ -727,6 +727,344 @@ const cancelJoinRequest = async (userId: string, requestId: string) => {
   return updated;
 };
 
+const getReconciliationReports = async (
+  userId: string,
+  filters: {
+    clinicId?: string;
+    period?: "daily" | "weekly" | "monthly" | "last_month" | "custom";
+    startDate?: string;
+    endDate?: string;
+    date?: string;
+    time?: string;
+    shift?: "morning" | "evening" | "all";
+    status?: string;
+    searchTerm?: string;
+  },
+  options: IPaginationOptions
+) => {
+  const { page, limit, skip, sortBy, sortOrder } =
+    paginationHelpers.calculatePagination(options);
+
+  const doctor = await prisma.doctor.findUnique({
+    where: { userId },
+    include: {
+      clinic: true,
+      doctorClinics: {
+        where: { isActive: true },
+        include: { clinic: true },
+      },
+    },
+  });
+
+  if (!doctor) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Doctor profile not found");
+  }
+
+  // Linked clinics (for UI tabs/filter)
+  const linkedClinicsMap = new Map<
+    string,
+    { id: string; clinicName: string | null; location: string | null; logo: string | null }
+  >();
+  if (doctor.clinic) {
+    linkedClinicsMap.set(doctor.clinic.id, {
+      id: doctor.clinic.id,
+      clinicName: doctor.clinic.clinicName,
+      location: doctor.clinic.location,
+      logo: doctor.clinic.logo,
+    });
+  }
+  for (const dc of doctor.doctorClinics) {
+    if (dc.clinic) {
+      linkedClinicsMap.set(dc.clinic.id, {
+        id: dc.clinic.id,
+        clinicName: dc.clinic.clinicName,
+        location: dc.clinic.location,
+        logo: dc.clinic.logo,
+      });
+    }
+  }
+  const availableClinics = Array.from(linkedClinicsMap.values());
+
+  const andConditions: Prisma.BookingAppointmentWhereInput[] = [
+    { doctorId: doctor.id },
+  ];
+
+  // 1. Clinic filter
+  if (filters.clinicId && filters.clinicId.toLowerCase() !== "all") {
+    andConditions.push({ clinicId: filters.clinicId });
+  }
+
+  // 2. Date / Period filter
+  let periodStart: Date | undefined;
+  let periodEnd: Date | undefined;
+  const now = new Date();
+
+  if (filters.date) {
+    const parts = filters.date.split("-").map(Number);
+    if (parts.length === 3 && !parts.some(isNaN)) {
+      periodStart = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0));
+      periodEnd = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999));
+    }
+  } else if (filters.period === "daily") {
+    periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+    periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+  } else if (filters.period === "weekly") {
+    const dayOfWeek = now.getUTCDay();
+    periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - dayOfWeek, 0, 0, 0, 0));
+    periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - dayOfWeek + 6, 23, 59, 59, 999));
+  } else if (filters.period === "monthly") {
+    periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+    periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+  } else if (filters.period === "last_month") {
+    periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1, 0, 0, 0, 0));
+    periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0, 23, 59, 59, 999));
+  } else if (filters.startDate || filters.endDate) {
+    if (filters.startDate) {
+      const parts = filters.startDate.split("-").map(Number);
+      if (parts.length === 3 && !parts.some(isNaN)) {
+        periodStart = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0));
+      }
+    }
+    if (filters.endDate) {
+      const parts = filters.endDate.split("-").map(Number);
+      if (parts.length === 3 && !parts.some(isNaN)) {
+        periodEnd = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999));
+      }
+    }
+  }
+
+  if (periodStart || periodEnd) {
+    andConditions.push({
+      consultDate: {
+        ...(periodStart ? { gte: periodStart } : {}),
+        ...(periodEnd ? { lte: periodEnd } : {}),
+      },
+    });
+  }
+
+  // 3. Time / Slot / Shift filter
+  if (filters.time && filters.time.trim()) {
+    const t = filters.time.trim();
+    andConditions.push({
+      OR: [
+        { startTime: { contains: t, mode: "insensitive" } },
+        { endTime: { contains: t, mode: "insensitive" } },
+      ],
+    });
+  } else if (filters.shift === "morning") {
+    andConditions.push({
+      startTime: { lt: "13:00" },
+    });
+  } else if (filters.shift === "evening") {
+    andConditions.push({
+      startTime: { gte: "13:00" },
+    });
+  }
+
+  // 4. Status filter
+  if (filters.status && filters.status.toUpperCase() !== "ALL") {
+    andConditions.push({
+      status: filters.status.toUpperCase() as BookingStatus,
+    });
+  }
+
+  // 5. Search term
+  if (filters.searchTerm && filters.searchTerm.trim()) {
+    const term = filters.searchTerm.trim();
+    andConditions.push({
+      patient: {
+        user: {
+          OR: [
+            { fullName: { contains: term, mode: "insensitive" } },
+            { phoneNumber: { contains: term, mode: "insensitive" } },
+          ],
+        },
+      },
+    });
+  }
+
+  const whereConditions: Prisma.BookingAppointmentWhereInput = {
+    AND: andConditions,
+  };
+
+  const appointments = await prisma.bookingAppointment.findMany({
+    where: whereConditions,
+    include: {
+      clinic: {
+        select: {
+          id: true,
+          clinicName: true,
+          location: true,
+          logo: true,
+          contactPhone: true,
+        },
+      },
+      patient: {
+        select: {
+          id: true,
+          user: {
+            select: {
+              fullName: true,
+              phoneNumber: true,
+              profileImage: true,
+            },
+          },
+        },
+      },
+    },
+    orderBy: sortBy && sortOrder ? { [sortBy]: sortOrder } : { consultDate: "desc" },
+    skip,
+    take: limit,
+  });
+
+  const total = await prisma.bookingAppointment.count({ where: whereConditions });
+
+  // Compute aggregate stats across matching appointments
+  const allMatching = await prisma.bookingAppointment.findMany({
+    where: whereConditions,
+    select: {
+      id: true,
+      status: true,
+      consultDate: true,
+      clinicId: true,
+      clinic: {
+        select: {
+          id: true,
+          clinicName: true,
+          logo: true,
+        },
+      },
+    },
+  });
+
+  const consultFee = doctor.consultFee || 0;
+  let totalCompleted = 0;
+  let totalConfirmed = 0;
+  let totalCancelled = 0;
+  let totalNoShow = 0;
+  let totalPending = 0;
+
+  const clinicSummaryMap = new Map<
+    string,
+    {
+      clinicId: string;
+      clinicName: string;
+      logo?: string | null;
+      totalCount: number;
+      completedCount: number;
+      totalAmount: number;
+    }
+  >();
+  const dailySummaryMap = new Map<
+    string,
+    {
+      date: string;
+      totalCount: number;
+      completedCount: number;
+      totalAmount: number;
+    }
+  >();
+
+  for (const apt of allMatching) {
+    if (apt.status === "COMPLETE") totalCompleted++;
+    else if (
+      apt.status === "CONFIRMED" ||
+      apt.status === "INPROGRESS" ||
+      apt.status === "ARRIVED"
+    )
+      totalConfirmed++;
+    else if (apt.status === "CANCELLED") totalCancelled++;
+    else if (apt.status === "NOT_SHOW") totalNoShow++;
+    else if (apt.status === "PENDING") totalPending++;
+
+    // Clinic breakdown
+    const cId = apt.clinicId;
+    const cName = apt.clinic?.clinicName || "Unknown Clinic";
+    const existingClinic = clinicSummaryMap.get(cId) || {
+      clinicId: cId,
+      clinicName: cName,
+      logo: apt.clinic?.logo || null,
+      totalCount: 0,
+      completedCount: 0,
+      totalAmount: 0,
+    };
+    existingClinic.totalCount++;
+    if (apt.status === "COMPLETE") {
+      existingClinic.completedCount++;
+      existingClinic.totalAmount += consultFee;
+    }
+    clinicSummaryMap.set(cId, existingClinic);
+
+    // Date breakdown
+    const dateStr = apt.consultDate
+      ? apt.consultDate.toISOString().split("T")[0]
+      : "Unknown";
+    const existingDaily = dailySummaryMap.get(dateStr) || {
+      date: dateStr,
+      totalCount: 0,
+      completedCount: 0,
+      totalAmount: 0,
+    };
+    existingDaily.totalCount++;
+    if (apt.status === "COMPLETE") {
+      existingDaily.completedCount++;
+      existingDaily.totalAmount += consultFee;
+    }
+    dailySummaryMap.set(dateStr, existingDaily);
+  }
+
+  const clinicBreakdown = Array.from(clinicSummaryMap.values());
+  const dailyBreakdown = Array.from(dailySummaryMap.values()).sort((a, b) =>
+    b.date.localeCompare(a.date)
+  );
+
+  return {
+    summary: {
+      totalAppointments: allMatching.length,
+      completedAppointments: totalCompleted,
+      confirmedAppointments: totalConfirmed,
+      cancelledAppointments: totalCancelled,
+      noShowAppointments: totalNoShow,
+      pendingAppointments: totalPending,
+      consultFeePerSession: consultFee,
+      totalEarnedAmount: totalCompleted * consultFee,
+      totalPotentialAmount: (totalCompleted + totalConfirmed) * consultFee,
+    },
+    availableClinics,
+    clinicBreakdown,
+    dailyBreakdown,
+    meta: {
+      page,
+      limit,
+      total,
+      totalPage: Math.ceil(total / limit),
+    },
+    data: appointments.map((apt) => ({
+      id: apt.id,
+      serialNumber: apt.serialNumber,
+      consultDate: apt.consultDate,
+      startTime: apt.startTime,
+      endTime: apt.endTime,
+      status: apt.status,
+      consultFee: consultFee,
+      clinic: {
+        id: apt.clinic.id,
+        clinicName: apt.clinic.clinicName,
+        location: apt.clinic.location,
+        logo: apt.clinic.logo,
+        contactPhone: apt.clinic.contactPhone,
+      },
+      patient: {
+        id: apt.patient.id,
+        fullName: apt.patient.user.fullName,
+        phoneNumber: apt.patient.user.phoneNumber,
+        profileImage: apt.patient.user.profileImage,
+      },
+      createdAt: apt.createdAt,
+    })),
+  };
+};
+
 export const DoctorService = {
   updateDoctorProfile,
   getDoctorProfile,
@@ -740,4 +1078,5 @@ export const DoctorService = {
   requestJoinClinic,
   getDoctorJoinRequests,
   cancelJoinRequest,
+  getReconciliationReports,
 };

@@ -88,4 +88,10 @@ router.delete(
   DoctorController.cancelJoinRequest
 );
 
+router.get(
+  "/reconciliation-reports",
+  auth(),
+  DoctorController.getReconciliationReports
+);
+
 export const DoctorRoutes = router;

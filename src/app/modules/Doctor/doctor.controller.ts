@@ -284,6 +284,34 @@ const getDoctorInsurances = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const getReconciliationReports = catchAsync(async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+  const options = pick(req.query, paginationFields);
+  const filters = pick(req.query, [
+    "clinicId",
+    "period",
+    "startDate",
+    "endDate",
+    "date",
+    "time",
+    "shift",
+    "status",
+    "searchTerm",
+  ]);
+
+  const result = await DoctorService.getReconciliationReports(
+    userId!,
+    filters,
+    options
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Doctor reconciliation reports retrieved successfully",
+    data: result,
+  });
+});
 
 export const DoctorController = {
   updateDoctorProfile,
@@ -298,4 +326,5 @@ export const DoctorController = {
   requestJoinClinic,
   getDoctorJoinRequests,
   cancelJoinRequest,
+  getReconciliationReports,
 };
