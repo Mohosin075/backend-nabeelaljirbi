@@ -176,6 +176,34 @@ const clinicNotification = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const suspendDoctor = catchAsync(async (req: Request, res: Response) => {
+  const { doctorId } = req.params;
+  const { suspended } = req.body;
+
+  const result = await AdminService.suspendDoctor(doctorId, suspended !== false);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: result.message,
+    data: result,
+  });
+});
+
+const suspendClinic = catchAsync(async (req: Request, res: Response) => {
+  const { clinicId } = req.params;
+  const { suspended } = req.body;
+
+  const result = await AdminService.suspendClinic(clinicId, suspended !== false);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: result.message,
+    data: result,
+  });
+});
+
 export const AdminController = {
   getDoctors,
   getPatients,
@@ -183,6 +211,8 @@ export const AdminController = {
   AdminClinicVerified,
   AdminStats,
   bannedUser,
+  suspendDoctor,
+  suspendClinic,
   getPatientPlatformSubscription,
   getClinicPlatformSubscription,
   SetServiceFree,

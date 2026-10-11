@@ -48,6 +48,18 @@ router.patch(
 );
 
 router.patch(
+  "/suspend-doctor/:doctorId",
+  // auth(UserRole.ADMIN),
+  AdminController.suspendDoctor
+);
+
+router.patch(
+  "/suspend-clinic/:clinicId",
+  // auth(UserRole.ADMIN),
+  AdminController.suspendClinic
+);
+
+router.patch(
   "/update-wallet",
   // auth(UserRole.ADMIN),
   AdminController.updateWallet

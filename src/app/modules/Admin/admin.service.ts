@@ -1,4 +1,4 @@
-import { Prisma, TopUpType, UserRole, UserStatus } from "@prisma/client";
+import { Prisma, TopUpType, UserRole, UserStatus, BookingStatus } from "@prisma/client";
 import { paginationHelpers } from "../../../utils/paginationHelper";
 import prisma from "../../../shared/prisma";
 import { IPaginationOptions } from "../../../interfaces/paginations";
@@ -6,6 +6,7 @@ import ApiError from "../../../errors/ApiErrors";
 import httpStatus from "http-status";
 import { Notification } from "../Notification/notification.service";
 import { adminNotificationQueue } from "../../jobs";
+import { BookingSchedulerService } from "../../jobs/services/bookingScheduler.service";
 
 
 
@@ -94,9 +95,12 @@ const getDoctors = async (filters: any, options: IPaginationOptions) => {
       profileImage: true,
       email: true,
       phoneNumber: true,
+      status: true,
+      banned: true,
       createdAt: true,
       doctor: {
         select: {
+          id: true,
           about: true,
           speciality: true,
           experience: true,
@@ -121,6 +125,7 @@ const getDoctors = async (filters: any, options: IPaginationOptions) => {
 
   const processedData = result.map(user => ({
     id: user.id,
+    doctorId: user.doctor?.id,
     fullName: user.fullName,
     gender: user.gender,
     dateOfBirth: user.dateOfBirth,
@@ -130,6 +135,8 @@ const getDoctors = async (filters: any, options: IPaginationOptions) => {
     profileImage: user.profileImage,
     email: user.email,
     phoneNumber: user.phoneNumber,
+    status: user.status,
+    banned: user.banned,
     createdAt: user.createdAt,
     about: user.doctor?.about,
     speciality: user.doctor?.speciality,
@@ -299,6 +306,8 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
       phoneNumber: true,
       serviceFree: true,
       wallet: true,
+      status: true,
+      banned: true,
       clinic: {
         select: {
           id: true,
@@ -316,15 +325,6 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
   });
 
   const total = await prisma.user.count({ where: whereConditions });
-
-  // console.log(`Found ${total} clinics matching search criteria`);
-  // if (result.length > 0) {
-  //   console.log("First result sample:", {
-  //     phoneNumber: result[0].phoneNumber,
-  //     clinicName: result[0].clinic?.clinicName,
-  //     managerPhone: result[0].clinic?.managerPhone
-  //   });
-  // }
 
   const processedData = result.map(user => ({
     id: user.id,
@@ -344,6 +344,8 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
     serviceFree: user.serviceFree,
     trial: user.clinic?.trial,
     wallet: user.wallet,
+    status: user.status,
+    banned: user.banned,
   }));
 
   return {
@@ -377,17 +379,241 @@ const AdminClinicVerified = async (clinicId: string, adminVerified: boolean) => 
   return result;
 };
 
-const bannedUser = async (userId: string, banned: boolean) => {
-  const user = await prisma.user.update({
-    where: {
-      id: userId
-    },
-    data: {
-      banned: banned
-    }
+const suspendUserWithRefund = async (targetId: string, suspended: boolean, reason?: string) => {
+  // 1. Locate user, doctor, and clinic entities
+  let user: any = await prisma.user.findUnique({
+    where: { id: targetId },
+    include: { doctor: true, clinic: true },
   });
-  return user;
-}
+
+  let doctorId: string | null = null;
+  let clinicId: string | null = null;
+
+  if (!user) {
+    // Check if targetId is a Doctor.id
+    const doc = await prisma.doctor.findUnique({
+      where: { id: targetId },
+      include: { user: true },
+    });
+    if (doc) {
+      user = doc.user;
+      doctorId = doc.id;
+    } else {
+      // Check if targetId is a Clinic.id
+      const cln = await prisma.clinic.findUnique({
+        where: { id: targetId },
+        include: { user: true },
+      });
+      if (cln) {
+        user = cln.user;
+        clinicId = cln.id;
+      }
+    }
+  } else {
+    if (user.doctor) doctorId = user.doctor.id;
+    if (user.clinic) clinicId = user.clinic.id;
+  }
+
+  if (!user) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Target user, doctor, or clinic not found");
+  }
+
+  // 2. If unsuspend / reactivate:
+  if (!suspended) {
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        banned: false,
+        status: UserStatus.ACTIVE,
+      },
+    });
+
+    return {
+      user: updatedUser,
+      cancelledAppointmentsCount: 0,
+      totalRefundedAmount: 0,
+      message: `${user.role || 'User'} has been activated successfully`,
+    };
+  }
+
+  // 3. If suspend:
+  // Step A: Update user status to SUSPENDED & banned: true
+  const updatedUser = await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      banned: true,
+      status: UserStatus.SUSPENDED,
+    },
+  });
+
+  // Step B: Find upcoming Confirmed & Pending appointments for this doctor or clinic
+  let cancelledCount = 0;
+  let totalRefunded = 0;
+
+  if (doctorId || clinicId) {
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    const whereFilter: Prisma.BookingAppointmentWhereInput = {
+      consultDate: { gte: startOfToday },
+      status: { in: [BookingStatus.CONFIRMED, BookingStatus.PENDING] },
+      ...(doctorId ? { doctorId } : {}),
+      ...(clinicId ? { clinicId } : {}),
+    };
+
+    const futureAppointments = await prisma.bookingAppointment.findMany({
+      where: whereFilter,
+      include: {
+        patient: {
+          include: { user: true },
+        },
+        clinic: {
+          include: { user: true },
+        },
+        doctor: {
+          include: { user: true },
+        },
+      },
+    });
+
+    const adminUser = await prisma.user.findFirst({
+      where: { role: UserRole.ADMIN },
+    });
+
+    for (const apt of futureAppointments) {
+      const patientUserId = apt.patient?.userId;
+      const patientFee = apt.patientServiceFee || 0;
+      const dateStr = new Date(apt.consultDate).toLocaleDateString();
+      const providerName = doctorId
+        ? `Dr. ${apt.doctor?.user?.fullName || ''}`
+        : `${apt.clinic?.clinicName || 'Clinic'}`;
+
+      await prisma.$transaction(async (tx) => {
+        // Update appointment status to CANCELLED and mark refunded
+        await tx.bookingAppointment.update({
+          where: { id: apt.id },
+          data: {
+            status: BookingStatus.CANCELLED,
+            refundPatient: true,
+            returnPatientBalance: true,
+          },
+        });
+
+        // 100% Full Refund to Patient
+        if (patientFee > 0 && patientUserId) {
+          // Increment patient wallet
+          await tx.user.update({
+            where: { id: patientUserId },
+            data: { wallet: { increment: patientFee } },
+          });
+
+          // Decrement admin wallet
+          if (adminUser) {
+            await tx.user.update({
+              where: { id: adminUser.id },
+              data: { wallet: { decrement: patientFee } },
+            });
+
+            // Admin refund record
+            await tx.topUp.create({
+              data: {
+                userId: adminUser.id,
+                amount: patientFee,
+                appointmentId: apt.id,
+                type: TopUpType.REFUND,
+              },
+            });
+          }
+
+          // Patient refund record
+          await tx.topUp.create({
+            data: {
+              userId: patientUserId,
+              amount: patientFee,
+              appointmentId: apt.id,
+              type: TopUpType.REFUND,
+            },
+          });
+
+          totalRefunded += patientFee;
+        }
+
+        // Also refund clinic fee if clinic was charged and not the suspended entity
+        if (apt.clinicServiceFee > 0 && apt.clinic?.userId) {
+          await tx.user.update({
+            where: { id: apt.clinic.userId },
+            data: { wallet: { increment: apt.clinicServiceFee } },
+          });
+
+          if (adminUser) {
+            await tx.user.update({
+              where: { id: adminUser.id },
+              data: { wallet: { decrement: apt.clinicServiceFee } },
+            });
+            await tx.topUp.create({
+              data: {
+                userId: adminUser.id,
+                amount: apt.clinicServiceFee,
+                appointmentId: apt.id,
+                type: TopUpType.REFUND,
+              },
+            });
+          }
+
+          await tx.topUp.create({
+            data: {
+              userId: apt.clinic.userId,
+              amount: apt.clinicServiceFee,
+              appointmentId: apt.id,
+              type: TopUpType.REFUND,
+            },
+          });
+        }
+
+        // Notify patient about cancellation and 100% full refund
+        await tx.patientNotification.create({
+          data: {
+            patientId: apt.patientId,
+            bookingAppointmentId: apt.id,
+            notificationType: "APPOINTMENT_CANCELLED",
+            title: "Appointment Cancelled & 100% Refunded",
+            description: `Your appointment with ${providerName} on ${dateStr} has been cancelled due to provider suspension. A full 100% refund of ${patientFee} LYD has been credited to your wallet balance.`,
+          },
+        });
+      });
+
+      // Cancel reminder notifications & timeout jobs in BullMQ
+      try {
+        await BookingSchedulerService.cancelBookingNotifications(apt.id);
+        await BookingSchedulerService.cancelPendingBookingTimeout(apt.id);
+        await BookingSchedulerService.cancelConfirmedBookingTimeout(apt.id);
+      } catch (err) {
+        console.error(`Failed to cancel booking scheduler jobs for ${apt.id}:`, err);
+      }
+
+      cancelledCount++;
+    }
+  }
+
+  return {
+    user: updatedUser,
+    cancelledAppointmentsCount: cancelledCount,
+    totalRefundedAmount: totalRefunded,
+    message: `${user.role || 'User'} suspended successfully. ${cancelledCount} future appointments were automatically cancelled with 100% refunds issued to patients.`,
+  };
+};
+
+const bannedUser = async (userId: string, banned: boolean) => {
+  return await suspendUserWithRefund(userId, banned);
+};
+
+const suspendDoctor = async (doctorId: string, suspended: boolean) => {
+  return await suspendUserWithRefund(doctorId, suspended);
+};
+
+const suspendClinic = async (clinicId: string, suspended: boolean) => {
+  return await suspendUserWithRefund(clinicId, suspended);
+};
 
 
 const getPatientPlatformSubscription = async (filters: any, options: IPaginationOptions) => {
@@ -703,6 +929,9 @@ export const AdminService = {
   AdminClinicVerified,
   AdminStats,
   bannedUser,
+  suspendUserWithRefund,
+  suspendDoctor,
+  suspendClinic,
   getPatientPlatformSubscription,
   getClinicPlatformSubscription,
   SetServiceFree,

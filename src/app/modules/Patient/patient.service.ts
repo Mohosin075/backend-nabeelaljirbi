@@ -1154,6 +1154,10 @@ const bookingAppointment = async (
     throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
   }
 
+  if (doctor.user?.banned || doctor.user?.status === UserStatus.SUSPENDED) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Doctor is currently suspended and cannot accept appointments");
+  }
+
   if (!doctor.consultFee) {
     throw new ApiError(httpStatus.NOT_FOUND, "Doctor consult fee not found");
   }
@@ -1175,6 +1179,10 @@ const bookingAppointment = async (
 
   if (!clinic || !clinic.clinic) {
     throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
+  }
+
+  if (clinic.banned || clinic.status === UserStatus.SUSPENDED) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Clinic is currently suspended and cannot accept appointments");
   }
 
   if (!clinic.country) {
