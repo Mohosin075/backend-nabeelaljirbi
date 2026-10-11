@@ -24,6 +24,7 @@ import { AllowNotificationRoutes } from "../modules/AllowNotification/allowNotif
 import { AllowAiChatRoutes } from "../modules/AllowAiChat/allowAiChat.routes";
 import { PatientServiceFeeRoutes } from "../modules/PatientServiceFee/patientServiceFee.routes";
 import { LegalDocumentRoutes } from "../modules/LegalDocument/legalDocument.routes";
+import { VerificationRoutes } from "../modules/Verification/verification.routes";
 
 const router = express.Router();
 
@@ -123,6 +124,10 @@ const moduleRoutes = [
   {
     path: "/legal-documents",
     route: LegalDocumentRoutes,
+  },
+  {
+    path: "/verification",
+    route: VerificationRoutes,
   }
 ];
 

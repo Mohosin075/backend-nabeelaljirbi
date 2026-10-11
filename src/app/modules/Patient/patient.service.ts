@@ -254,6 +254,7 @@ const getPopularDoctors = async (
       fee: doc.doctor?.consultFee,
       profileImage: doc.profileImage,
       clinic: doc.doctor?.clinic?.clinicName,
+      badgeActive: doc.doctor?.badgeActive || false,
       rating: Number(averageRating.toFixed(1)),
       reviewCount,
       avgRating: averageRating * Math.log(1 + reviewCount),
@@ -533,6 +534,7 @@ const getNearestClinics = async (
           latitude: true,
           longitude: true,
           adminVerified: true,
+          badgeActive: true,
           specialists: {
             select: {
               specialist: {
@@ -564,6 +566,7 @@ const getNearestClinics = async (
         specialistCount: clinic.specialists.length,
         specialties: specialties || [],
         adminVerified: clinic.adminVerified,
+        badgeActive: clinic.badgeActive || false,
         platformSubscriptionActive: c.platformSubscriptionActive,
         city: c.city || clinic.location || "",
         country: c.country || "",
@@ -643,6 +646,9 @@ const getClinicDetailsById = async (clinicUserId: string) => {
           latitude: true,
           longitude: true,
           views: true,
+          adminVerified: true,
+          badgeActive: true,
+          verificationStatus: true,
           specialists: {
             select: {
               id: true,
@@ -694,6 +700,9 @@ const getClinicDetailsById = async (clinicUserId: string) => {
     about: clinicUser.clinic.about,
     logo: clinicUser.clinic.logo,
     phoneNumber: clinicUser.phoneNumber,
+    adminVerified: clinicUser.clinic.adminVerified,
+    badgeActive: clinicUser.clinic.badgeActive || false,
+    verificationStatus: clinicUser.clinic.verificationStatus || "NOT_SUBMITTED",
     platformSubscriptionActive: clinicUser.platformSubscriptionActive,
     address: clinicUser.address,
     location: clinicUser.clinic.location,
@@ -961,6 +970,7 @@ const getClinicDoctors = async (
       views: doc.doctor?.clinic?.views,
       clinicId: doc.doctor?.clinic?.userId,
       doctorId: doc.doctor?.id,
+      badgeActive: doc.doctor?.badgeActive || false,
     };
   });
 
@@ -1063,6 +1073,8 @@ const getDoctor = async (doctorId: string) => {
   return {
     id: doctorUser.id,
     name: doctorUser.fullName,
+    badgeActive: doctorUser.doctor.badgeActive || false,
+    verificationStatus: doctorUser.doctor.verificationStatus || "NOT_SUBMITTED",
     country: doctorUser.country,
     city: doctorUser.city,
     specialty: doctorUser.doctor.speciality,

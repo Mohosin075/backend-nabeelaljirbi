@@ -177,6 +177,13 @@ model Doctor {
   biography      String?
   clinic         Clinic?   @relation("DoctorClinic", fields: [clinicId], references: [id])
   chats          Chat[]
+  badgeActive             Boolean   @default(false)
+  verificationStatus      String    @default("NOT_SUBMITTED")
+  verificationDocuments   Json?
+  verificationNotes       String?
+  verificationAdminNote   String?
+  verificationSubmittedAt DateTime?
+  verificationReviewedAt  DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -263,6 +270,13 @@ model Clinic {
   latitude      Float?
   longitude     Float?
   adminVerified Boolean @default(false)
+  badgeActive             Boolean   @default(false)
+  verificationStatus      String    @default("NOT_SUBMITTED")
+  verificationDocuments   Json?
+  verificationNotes       String?
+  verificationAdminNote   String?
+  verificationSubmittedAt DateTime?
+  verificationReviewedAt  DateTime?
   views         Int     @default(0)
   trial         Boolean @default(true)
 

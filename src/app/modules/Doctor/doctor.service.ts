@@ -30,6 +30,7 @@ const getDoctorProfile = async (userId: string) => {
       currentEarnings: true,
       doctor: {
         select: {
+          id: true,
           speciality: true,
           experience: true,
           licenseNumber: true,
@@ -39,6 +40,10 @@ const getDoctorProfile = async (userId: string) => {
           createdAt: true,
           biography: true,
           qualifications: true,
+          badgeActive: true,
+          verificationStatus: true,
+          verificationDocuments: true,
+          verificationAdminNote: true,
           clinic: {
             select: {
               logo: true,
