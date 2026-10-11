@@ -301,6 +301,7 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
       wallet: true,
       clinic: {
         select: {
+          id: true,
           managerName: true,
           managerPhone: true,
           logo: true,
@@ -327,6 +328,7 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
 
   const processedData = result.map(user => ({
     id: user.id,
+    clinicId: user.clinic?.id,
     country: user.country,
     city: user.city,
     address: user.address,
@@ -351,27 +353,29 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
 };
 
 const AdminClinicVerified = async (clinicId: string, adminVerified: boolean) => {
-
-  const clinic = await prisma.user.findUnique({
+  const existingClinic = await prisma.clinic.findFirst({
     where: {
-      id: clinicId
-    }
+      OR: [
+        { id: clinicId },
+        { userId: clinicId },
+      ],
+    },
   });
 
-  if (!clinic) {
+  if (!existingClinic) {
     throw new ApiError(httpStatus.NOT_FOUND, 'Clinic not found');
   }
 
   const result = await prisma.clinic.update({
     where: {
-      userId: clinicId
+      id: existingClinic.id,
     },
     data: {
-      adminVerified: adminVerified
-    }
+      adminVerified: adminVerified,
+    },
   });
   return result;
-}
+};
 
 const bannedUser = async (userId: string, banned: boolean) => {
   const user = await prisma.user.update({

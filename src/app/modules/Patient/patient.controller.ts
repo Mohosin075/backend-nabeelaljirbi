@@ -72,7 +72,7 @@ const getPopularDoctors = catchAsync(async (req: Request, res: Response) => {
 const getNearestClinics = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.id;
     const options = pick(req.query, paginationFields);
-  const filters = pick(req.query, ["search", "rating", "consultFee", "city", "country", "speciality"]);
+  const filters = pick(req.query, ["search", "rating", "consultFee", "city", "country", "speciality", "specialty", "specialistId"]);
 
 
   const result = await PatientService.getNearestClinics(

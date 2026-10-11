@@ -1,4 +1,4 @@
-import { Prisma, UserRole, BookingStatus, TopUpType, Country } from "@prisma/client";
+import { Prisma, UserRole, BookingStatus, TopUpType, Country, UserStatus } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
 import { paginationHelpers } from "../../../utils/paginationHelper";
@@ -17,6 +17,8 @@ interface DoctorFilters {
   city?: string;
   country?: string;
   speciality?: string;
+  specialty?: string;
+  specialistId?: string;
 }
 
 const getPatientProfile = async (userId: string) => {
@@ -402,7 +404,7 @@ const getNearestClinics = async (
 ) => {
   const { page, limit, skip } = paginationHelpers.calculatePagination(options);
 
-  const { search, city, country } = filters;
+  const { search, city, country, specialty, speciality, specialistId } = filters;
 
   // 1️⃣ Get user location
   const user = await prisma.user.findUnique({
@@ -421,8 +423,8 @@ const getNearestClinics = async (
   const userLng = user?.patient?.longitude ?? 0;
 
   // 2️⃣ Build WHERE conditions
+  // A clinic must be admin-verified, not banned, and not deleted
   const andConditions: Prisma.UserWhereInput[] = [
-    { role: UserRole.CLINIC },
     {
       clinic: {
         is: {
@@ -430,47 +432,115 @@ const getNearestClinics = async (
         },
       },
     },
+    { banned: false },
+    { status: { not: UserStatus.DELETED } },
   ];
 
-  if (city) {
+  if (city && city.trim().toLowerCase() !== "all") {
+    const trimmedCity = city.trim();
     andConditions.push({
-      city: { contains: city, mode: "insensitive" },
+      OR: [
+        { city: { contains: trimmedCity, mode: "insensitive" } },
+        { address: { contains: trimmedCity, mode: "insensitive" } },
+        { clinic: { location: { contains: trimmedCity, mode: "insensitive" } } },
+      ],
     });
   }
 
-  if (country) {
+  if (country && country.trim().toLowerCase() !== "all") {
+    const trimmedCountry = country.trim();
     andConditions.push({
-      country: { contains: country, mode: "insensitive" },
+      OR: [
+        { country: { contains: trimmedCountry, mode: "insensitive" } },
+        { clinic: { location: { contains: trimmedCountry, mode: "insensitive" } } },
+      ],
     });
   }
 
-  if (search) {
+  if (search && search.trim()) {
+    const trimmedSearch = search.trim();
+    andConditions.push({
+      OR: [
+        {
+          clinic: {
+            clinicName: {
+              contains: trimmedSearch,
+              mode: "insensitive",
+            },
+          },
+        },
+        {
+          clinic: {
+            location: {
+              contains: trimmedSearch,
+              mode: "insensitive",
+            },
+          },
+        },
+        {
+          fullName: {
+            contains: trimmedSearch,
+            mode: "insensitive",
+          },
+        },
+      ],
+    });
+  }
+
+  const specialtyQuery = specialty || speciality;
+  if (specialistId) {
     andConditions.push({
       clinic: {
-        clinicName: {
-          contains: search,
-          mode: "insensitive",
+        specialists: {
+          some: {
+            specialistId: specialistId,
+          },
+        },
+      },
+    });
+  } else if (specialtyQuery && specialtyQuery.trim().toLowerCase() !== "all") {
+    const trimmedSpecialty = specialtyQuery.trim();
+    andConditions.push({
+      clinic: {
+        specialists: {
+          some: {
+            specialist: {
+              name: {
+                contains: trimmedSpecialty,
+                mode: "insensitive",
+              },
+            },
+          },
         },
       },
     });
   }
 
-  // 3️⃣ Fetch only required clinic data
+  // 3️⃣ Fetch clinic data
   const clinics = await prisma.user.findMany({
     where: { AND: andConditions },
     select: {
       id: true,
+      city: true,
+      country: true,
       platformSubscriptionActive: true,
       clinic: {
         select: {
           id: true,
           clinicName: true,
           logo: true,
+          location: true,
           latitude: true,
           longitude: true,
           adminVerified: true,
           specialists: {
-            select: { id: true },
+            select: {
+              specialist: {
+                select: {
+                  name: true,
+                },
+              },
+            },
           },
         },
       },
@@ -482,14 +552,22 @@ const getNearestClinics = async (
     .filter((c) => c.clinic)
     .map((c) => {
       const clinic = c.clinic!;
+      const specialties = clinic.specialists
+        ?.map((s) => s.specialist?.name)
+        .filter(Boolean) as string[];
+
       return {
         clinicUserId: c.id,
         clinicId: clinic.id,
         clinicName: clinic.clinicName,
         logo: clinic.logo,
         specialistCount: clinic.specialists.length,
+        specialties: specialties || [],
         adminVerified: clinic.adminVerified,
         platformSubscriptionActive: c.platformSubscriptionActive,
+        city: c.city || clinic.location || "",
+        country: c.country || "",
+        location: clinic.location || "",
         latitude: clinic.latitude || 0,
         longitude: clinic.longitude || 0,
         distance: calculateDistance(
@@ -537,10 +615,13 @@ const calculateDistance = (
 };
 
 const getClinicDetailsById = async (clinicUserId: string) => {
-  const clinicUser = await prisma.user.findUnique({
+  const clinicUser = await prisma.user.findFirst({
     where: {
-      id: clinicUserId,
-      role: UserRole.CLINIC,
+      OR: [
+        { id: clinicUserId },
+        { clinic: { id: clinicUserId } },
+      ],
+      clinic: { isNot: null },
     },
     select: {
       id: true,
@@ -780,9 +861,15 @@ const getClinicDoctors = async (
   const { page, skip, limit } = paginationHelpers.calculatePagination(options);
   const { search, rating, consultFee, speciality, city, country } = filters;
 
-  // 1️⃣ Get Clinic ID from User ID
-  const clinicUser = await prisma.user.findUnique({
-    where: { id: clinicUserId, role: UserRole.CLINIC },
+  // 1️⃣ Get Clinic ID from User ID or Clinic ID
+  const clinicUser = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { id: clinicUserId },
+        { clinic: { id: clinicUserId } },
+      ],
+      clinic: { isNot: null },
+    },
     include: { clinic: true },
   });
 
