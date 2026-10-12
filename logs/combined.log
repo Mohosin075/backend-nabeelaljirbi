@@ -3533,3 +3533,12 @@
 {"level":"info","message":"Incoming request: GET /api/v1/patient/get-doctor/cmt05z9250068ksv6y62b7vu4","service":"default-service-name","timestamp":"2026-10-12 11:33:07"}
 {"level":"info","message":"Incoming request: GET /api/v1/patient/get-clinic-doctors/cmt5z0a5k007qksv63p9z9xeo","service":"default-service-name","timestamp":"2026-10-12 11:33:09"}
 {"level":"info","message":"Incoming request: GET /api/v1/patient/clinics/cmt5z0a5k007qksv63p9z9xeo","service":"default-service-name","timestamp":"2026-10-12 11:33:09"}
+{"level":"info","message":"Incoming request: GET /api/v1/patient/appointment-history","service":"default-service-name","timestamp":"2026-10-12 12:01:30"}
+{"level":"info","message":"Incoming request: GET /api/v1/patient/profile","service":"default-service-name","timestamp":"2026-10-12 12:01:30"}
+{"level":"info","message":"Incoming request: GET /api/v1/allow-ai-chat","service":"default-service-name","timestamp":"2026-10-12 12:01:30"}
+{"level":"info","message":"Incoming request: GET /api/v1/payment/top-up-history","service":"default-service-name","timestamp":"2026-10-12 12:01:30"}
+{"level":"info","message":"Incoming request: GET /api/v1/patient/clinics/nearest?page=1&limit=10","service":"default-service-name","timestamp":"2026-10-12 12:01:30"}
+{"level":"info","message":"Incoming request: GET /api/v1/specialist?page=1&limit=50","service":"default-service-name","timestamp":"2026-10-12 12:01:30"}
+{"level":"info","message":"Incoming request: GET /api/v1/legal-documents/check-status","service":"default-service-name","timestamp":"2026-10-12 12:01:30"}
+{"level":"info","message":"Incoming request: GET /api/v1/patient/doctors/popular?page=1&limit=10","service":"default-service-name","timestamp":"2026-10-12 12:01:30"}
+{"level":"info","message":"Incoming request: GET /api/v1/banner","service":"default-service-name","timestamp":"2026-10-12 12:01:30"}

@@ -549,7 +549,7 @@ const confirmBooking = async (
     console.error("Error cancelling pending timeout:", err);
   }
 
-  // Schedule reminders for 24 hours and 3 hours before appointment
+  // Schedule 24h + 3h reminders and 12h auto-settle for CONFIRMED booking
   try {
     await BookingSchedulerService.scheduleBookingNotifications({
       appointmentId: updatedBooking.id,
@@ -563,6 +563,30 @@ const confirmBooking = async (
     });
   } catch (reminderErr) {
     console.error("Error scheduling reminders:", reminderErr);
+  }
+
+  // Issue #2 fix: Schedule 12-hour auto-settle job (Section 5 requirement)
+  // "An unresolved confirmed appointment auto-settles 12 hours after period end."
+  try {
+    const adminUser = await prisma.user.findUnique({
+      where: { phoneNumber: `${process.env.ADMIN_PHONE_NUMBER}` },
+      select: { id: true },
+    });
+    if (adminUser) {
+      await BookingSchedulerService.scheduleConfirmedBookingTimeout({
+        appointmentId: updatedBooking.id,
+        patientId: updatedBooking.patientId,
+        clinicId: updatedBooking.clinicId,
+        clinicUserId: appointment.clinic.userId,
+        adminUserId: adminUser.id,
+        patientServiceFee: appointment.patientServiceFee || appointment.serviceFeeAmount || 0,
+        clinicServiceFee: appointment.clinicServiceFee || 0,
+        consultDate: updatedBooking.consultDate,
+        endTime: updatedBooking.endTime!,
+      });
+    }
+  } catch (autoSettleErr) {
+    console.error("Error scheduling confirmed timeout:", autoSettleErr);
   }
 
   return updatedBooking;
@@ -753,7 +777,8 @@ const getBookings = async (userId: string, role: string, options: any) => {
 const cancelBooking = async (
   appointmentId: string,
   callerUserId?: string,
-  callerRole?: string
+  callerRole?: string,
+  reason?: string
 ) => {
   const booking = await prisma.bookingAppointment.findUnique({
     where: { id: appointmentId },
@@ -837,51 +862,42 @@ const cancelBooking = async (
     const serviceFeeAmount = booking.serviceFeeAmount || 0;
     const consultFee = booking.consultFee || 0;
     const collectionMode = booking.collectionMode || "MODE_A";
-    const totalRefundAmount =
-      booking.holdAmount ||
-      booking.totalAmount ||
-      serviceFeeAmount + (collectionMode === "MODE_B" ? consultFee : 0);
+
+    /**
+     * Issue #1 fix — Service fee is NON-REFUNDABLE once booking is confirmed.
+     * Section 6: "captured and non-refundable the moment a booking is confirmed
+     * regardless of what happens afterward."
+     *
+     * On cancellation of a CONFIRMED booking:
+     * - Mode A: patient only paid the service fee; they get NOTHING back.
+     * - Mode B: patient paid service fee + consult fee; they get back the CONSULT FEE only.
+     *   The clinic wallet must be decremented for the consult fee (already credited at confirm).
+     * The service fee stays with admin (platform) in both modes.
+     */
+    const refundToPatient =
+      collectionMode === "MODE_B" ? consultFee : 0;
 
     const updatedBooking = await prisma.$transaction(async (tx) => {
-      // 1. Refund patient wallet in full
-      if (totalRefundAmount > 0) {
+      // 1. Refund patient consult fee (Mode B only; service fee is non-refundable)
+      if (refundToPatient > 0) {
         await tx.user.update({
           where: { id: patientUserId },
           data: {
-            wallet: { increment: totalRefundAmount },
+            wallet: { increment: refundToPatient },
           },
         });
 
         await tx.topUp.create({
           data: {
             userId: patientUserId,
-            amount: totalRefundAmount,
+            amount: refundToPatient,
             appointmentId: booking.id,
             type: TopUpType.REFUND,
           },
         });
       }
 
-      // 2. Decrement admin wallet for platform service fee
-      if (adminUser && serviceFeeAmount > 0) {
-        await tx.user.update({
-          where: { id: adminUser.id },
-          data: {
-            wallet: { decrement: serviceFeeAmount },
-          },
-        });
-
-        await tx.topUp.create({
-          data: {
-            userId: adminUser.id,
-            amount: serviceFeeAmount,
-            appointmentId: booking.id,
-            type: TopUpType.REFUND,
-          },
-        });
-      }
-
-      // 3. In Mode B: Decrement clinic wallet for consult fee
+      // 2. In Mode B: Reclaim consult fee from clinic wallet
       if (collectionMode === "MODE_B" && consultFee > 0) {
         await tx.user.update({
           where: { id: clinicUserId },
@@ -900,17 +916,24 @@ const cancelBooking = async (
         });
       }
 
-      // 4. Update appointment status
+      // NOTE: Admin wallet is NOT touched — service fee is permanently retained by platform.
+
+      // 3. Update appointment status
       const updated = await tx.bookingAppointment.update({
         where: { id: appointmentId },
         data: {
           status: BookingStatus.CANCELLED,
           cancelledBy,
-          cancellationReason: `Cancelled by ${cancelledBy.toLowerCase()}`,
+          cancellationReason: reason || `Cancelled by ${cancelledBy.toLowerCase()}`,
         },
       });
 
-      // 5. Patient notification
+      // 4. Patient notification
+      const refundMsg =
+        refundToPatient > 0
+          ? `The consultation amount of ${refundToPatient} LYD has been refunded to your wallet. The service fee is non-refundable.`
+          : `Please note the service fee is non-refundable once an appointment is confirmed.`;
+
       await tx.patientNotification.create({
         data: {
           patientId: booking.patientId,
@@ -921,7 +944,7 @@ const cancelBooking = async (
             booking.doctor?.user?.fullName || "Doctor"
           } on ${new Date(
             booking.consultDate
-          ).toLocaleDateString()} has been cancelled. A full refund of ${totalRefundAmount} LYD has been credited to your wallet.`,
+          ).toLocaleDateString()} has been cancelled. ${refundMsg}`,
         },
       });
 

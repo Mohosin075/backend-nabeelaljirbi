@@ -7,6 +7,8 @@ import {
 } from '../queues/bookingQueue';
 import prisma from '../../../shared/prisma';
 import { BookingStatus, TopUpType } from '@prisma/client';
+import { BookingService } from '../../modules/Booking/booking.service';
+import { broadcastBookingUpdate } from '../../../helpars/socket/socketHandler';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Booking Notification Worker (existing — 24h / 3h reminders)
@@ -298,6 +300,7 @@ export const appointmentLifecycleWorker = new Worker<
         appointmentId,
         patientId,
         clinicId,
+        clinicUserId,
         adminUserId,
         patientServiceFee,
         clinicServiceFee,
@@ -312,10 +315,11 @@ export const appointmentLifecycleWorker = new Worker<
         return { status: 'skipped', reason: 'not_found' };
       }
 
-      // Only act if still CONFIRMED or INPROGRESS (clinic never marked complete/no-show)
+      // Actionable if CONFIRMED, INPROGRESS, or ARRIVED (clinic never finalised status)
       const actionableStatuses: BookingStatus[] = [
         BookingStatus.CONFIRMED,
         BookingStatus.INPROGRESS,
+        BookingStatus.ARRIVED,
       ];
 
       if (!actionableStatuses.includes(appointment.status)) {
@@ -325,47 +329,102 @@ export const appointmentLifecycleWorker = new Worker<
         return { status: 'skipped', reason: `already_${appointment.status}` };
       }
 
+      // 🌍 Section 5 Auto-Settle Rule:
+      // "An unresolved confirmed appointment auto-settles 12 hours after period end:
+      // Completed if Arrived was ever recorded, otherwise Neglected (service fee stays with the platform, consultation amount refunded)."
+      if (appointment.status === BookingStatus.ARRIVED) {
+        console.log(`✅ [CONFIRMED_TIMEOUT] Appointment ${appointmentId} was ARRIVED → Auto-Completing.`);
+        await BookingService.completeBooking(appointmentId);
+        return { status: 'success', outcome: 'AUTO_COMPLETED', appointmentId };
+      }
+
+      // Otherwise: Neglected (arrival was never recorded)
       console.log(
-        `🚨 [CONFIRMED_TIMEOUT] Clinic did not update visit status for ${appointmentId} — ` +
-        `auto-closing. Admin keeps patientServiceFee=${patientServiceFee}.`
+        `🚨 [CONFIRMED_TIMEOUT] Appointment ${appointmentId} unresolved & no arrival recorded — ` +
+        `auto-settling as Neglected. Service fee stays with platform; refunding consultation amount if collected.`
       );
 
+      const patient = await prisma.patient.findUnique({
+        where: { id: patientId },
+        select: { userId: true },
+      });
+
+      const consultFee = appointment.consultFee || 0;
+      const isModeB = appointment.collectionMode === "MODE_B";
+
       await prisma.$transaction(async (tx) => {
-        // 1. Close the appointment
+        // 1. Close appointment as NOT_SHOW with clear neglected reason
         await tx.bookingAppointment.update({
           where: { id: appointmentId },
-          data: { status: BookingStatus.NOT_SHOW },
+          data: {
+            status: BookingStatus.NOT_SHOW,
+            cancellationReason: "Auto-settled: Neglected (no arrival recorded)",
+          },
         });
 
-        // 3. Notify the patient that the appointment was auto-closed
+        // 2. Refund consultation fee if Mode B
+        if (isModeB && consultFee > 0 && patient?.userId) {
+          await tx.user.update({
+            where: { id: patient.userId },
+            data: { wallet: { increment: consultFee } },
+          });
+
+          await tx.topUp.create({
+            data: {
+              userId: patient.userId,
+              amount: consultFee,
+              appointmentId: appointment.id,
+              type: TopUpType.REFUND,
+            },
+          });
+        }
+
+        // 3. Notify patient
         await tx.patientNotification.create({
           data: {
             patientId,
             bookingAppointmentId: appointmentId,
             notificationType: 'APPOINTMENT_AUTO_CLOSED',
-            title: 'Appointment Closed',
+            title: 'Appointment Auto-Settled',
             description:
-              'Your appointment has been automatically closed because the clinic did not update ' +
-              'the visit status within the configured timeout after the appointment end time.',
+              isModeB && consultFee > 0
+                ? `Your appointment was unresolved after the period end. The consultation amount of ${consultFee} LYD has been refunded to your wallet.`
+                : 'Your appointment was marked as unresolved after the scheduled period.',
           },
         });
 
-        // 4. Notify the clinic
+        // 4. Notify clinic
         await tx.clinicNotification.create({
           data: {
             clinicId,
             bookingAppointmentId: appointmentId,
             notificationType: 'APPOINTMENT_AUTO_CLOSED',
-            title: 'Appointment Auto-Closed',
+            title: 'Appointment Neglected & Auto-Closed',
             description:
-              `Appointment ${appointmentId} was automatically closed because the visit status ` +
-              `was not updated within the configured timeout. Service fee of ${clinicServiceFee} has been retained by the platform.`,
+              `Appointment ${appointmentId} auto-settled after period end without recorded arrival. Service fee of ${clinicServiceFee} was retained by platform.`,
           },
         });
       });
 
-      console.log(`✅ [CONFIRMED_TIMEOUT] Appointment ${appointmentId} → NOT_SHOW, admin retains fees`);
-      return { status: 'success', outcome: 'AUTO_CLOSED', appointmentId };
+      try {
+        broadcastBookingUpdate({
+          bookingId: appointment.id,
+          status: BookingStatus.NOT_SHOW,
+          clinicId: appointment.clinicId,
+          doctorId: appointment.doctorId,
+          patientId: appointment.patientId,
+          patientUserId: patient?.userId,
+          clinicUserId: clinicUserId,
+          reason: "Auto-settled: Neglected (no arrival recorded)",
+          serialNumber: appointment.serialNumber,
+          consultDate: appointment.consultDate,
+        });
+      } catch (e) {
+        console.error("WS broadcast error:", e);
+      }
+
+      console.log(`✅ [CONFIRMED_TIMEOUT] Appointment ${appointmentId} → Neglected / NOT_SHOW auto-settled`);
+      return { status: 'success', outcome: 'AUTO_NEGLECTED', appointmentId };
     }
 
     console.warn(`⚠️ Unknown lifecycle job name: ${jobName}`);

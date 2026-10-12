@@ -52,8 +52,9 @@ const cancelBooking = catchAsync(async (req: Request, res: Response) => {
   const { appointmentId } = req.params;
   const userId = req.user?.id;
   const role = req.user?.role;
+  const { reason } = req.body; // Issue #4 fix: pass reason through
 
-  const result = await BookingService.cancelBooking(appointmentId, userId, role);
+  const result = await BookingService.cancelBooking(appointmentId, userId, role, reason);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

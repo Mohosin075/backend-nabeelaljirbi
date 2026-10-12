@@ -210,3 +210,43 @@ export function sendToUser(userId: string, message: any) {
   }
   return false;
 }
+
+// Utility to broadcast a booking update across participants and any active dashboard/staff
+export function broadcastBookingUpdate(bookingData: {
+  bookingId: string;
+  status: string;
+  clinicId?: string;
+  doctorId?: string;
+  patientId?: string;
+  patientUserId?: string;
+  clinicUserId?: string;
+  doctorUserId?: string;
+  reason?: string;
+  [key: string]: any;
+}) {
+  const payload = {
+    type: "BOOKING_STATUS_CHANGED",
+    data: bookingData,
+    timestamp: new Date().toISOString(),
+  };
+
+  // 1. Direct send to targeted participants
+  const targetUserIds = new Set<string>();
+  if (bookingData.patientUserId) targetUserIds.add(bookingData.patientUserId);
+  if (bookingData.clinicUserId) targetUserIds.add(bookingData.clinicUserId);
+  if (bookingData.doctorUserId) targetUserIds.add(bookingData.doctorUserId);
+
+  targetUserIds.forEach((uid) => sendToUser(uid, payload));
+
+  // 2. Broadcast to all active connected sockets (Clinic Dashboard, Staff, etc.)
+  connectedUsers.forEach((presence) => {
+    if (presence.ws.readyState === WebSocket.OPEN) {
+      try {
+        presence.ws.send(JSON.stringify(payload));
+      } catch (e) {
+        // non-blocking
+      }
+    }
+  });
+}
+

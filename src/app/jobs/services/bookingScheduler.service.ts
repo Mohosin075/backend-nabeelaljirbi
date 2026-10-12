@@ -328,11 +328,24 @@ export async function cancelPendingBookingTimeout(appointmentId: string): Promis
 // If still CONFIRMED/INPROGRESS → NOT_SHOW. Admin keeps all fees.
 // ─────────────────────────────────────────────────────────────────────────────
 
+function calculateConfirmedTimeoutAt(consultDate: Date, endTime: string): Date {
+  const { hours, minutes, seconds } = parseTimeParts(endTime);
+  const slotEndAt = new Date(consultDate);
+  slotEndAt.setUTCHours(hours, minutes, seconds, 0);
+
+  const midnightUTC = new Date(consultDate);
+  midnightUTC.setUTCHours(0, 0, 0, 0);
+  if (slotEndAt.getTime() <= midnightUTC.getTime()) {
+    slotEndAt.setUTCDate(slotEndAt.getUTCDate() + 1);
+  }
+
+  // 🌍 Section 5: Unresolved confirmed appointment auto-settles 12 hours after period end
+  return new Date(slotEndAt.getTime() + 12 * 60 * 60 * 1000);
+}
+
 /**
- * Schedule a delayed job that fires 30 minutes after the doctor's WorkingSlot
- * endTime on the consultDate (same pattern as PENDING_TIMEOUT).
- * If the clinic still has not updated the visit status by then,
- * the job auto-closes the appointment and the admin keeps all funds.
+ * Schedule a delayed job that fires 12 hours after the doctor's WorkingSlot
+ * endTime on the consultDate (Section 5 Auto-Settle rule).
  */
 export async function scheduleConfirmedBookingTimeout(
   params: ScheduleConfirmedTimeoutParams
@@ -351,8 +364,7 @@ export async function scheduleConfirmedBookingTimeout(
 
   try {
     const now = Date.now();
-    // Reuse calculatePendingTimeoutAt: slot endTime + 30 minutes on the consultDate
-    const fireAt = calculatePendingTimeoutAt(new Date(consultDate), endTime);
+    const fireAt = calculateConfirmedTimeoutAt(new Date(consultDate), endTime);
     const delay = Math.max(0, fireAt.getTime() - now);
 
     const jobId = buildBullJobId(appointmentId, 'confirmed-timeout');

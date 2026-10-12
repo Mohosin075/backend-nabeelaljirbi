@@ -498,6 +498,7 @@ model BookingAppointment {
   rejectionReason            String?
   cancelledBy                String?
   cancellationReason         String?
+  noShowReason               String?  // Reason stays visible to patient (Section 5)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -1065,6 +1065,12 @@ const getReconciliationReports = async (
         phoneNumber: apt.patient.user.phoneNumber,
         profileImage: apt.patient.user.profileImage,
       },
+      approximateEstimatedTime: apt.approximateEstimatedTime,
+      cancellationReason: apt.cancellationReason,
+      rejectionReason: apt.rejectionReason,
+      bookedFor: apt.bookedFor,
+      familyMemberName: apt.familyMemberName,
+      familyMemberRelation: apt.familyMemberRelation,
       createdAt: apt.createdAt,
     })),
   };

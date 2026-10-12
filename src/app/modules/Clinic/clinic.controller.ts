@@ -290,12 +290,13 @@ const getClinicManagerStats = catchAsync(
 const updateAppointmentStatus = catchAsync(
   async (req: Request, res: Response) => {
     const userId = req.user.id;
-    const { bookingId, status } = req.body;
+    const { bookingId, status, reason } = req.body;
 
     const result = await ClinicService.updateAppointmentStatus(
       userId,
       bookingId,
       status,
+      reason,
     );
 
     sendResponse(res, {
@@ -310,12 +311,13 @@ const updateAppointmentStatus = catchAsync(
 const managerUpdateAppointmentStatus = catchAsync(
   async (req: Request, res: Response) => {
     const userId = req.user.id;
-    const { bookingId, status } = req.body;
+    const { bookingId, status, reason } = req.body;
 
     const result = await ClinicService.managerUpdateAppointmentStatus(
       userId,
       bookingId,
       status,
+      reason,
     );
 
     sendResponse(res, {

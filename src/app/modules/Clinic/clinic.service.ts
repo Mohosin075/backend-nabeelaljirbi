@@ -8,6 +8,7 @@ import { generateTokens } from "../Auth/auth.service";
 import { BookingSchedulerService } from "../../jobs/services/bookingScheduler.service";
 import { Notification } from "../Notification/notification.service";
 import { BookingService } from "../Booking/booking.service";
+import { broadcastBookingUpdate } from "../../../helpars/socket/socketHandler";
 
 interface DoctorFilters {
   search?: string; // name or speciality
@@ -584,6 +585,19 @@ const getBookingHistory = async (
       serialNumber: true,
       startTime: true,
       endTime: true,
+      approximateEstimatedTime: true,
+      cancellationReason: true,
+      rejectionReason: true,
+      bookedFor: true,
+      familyMemberName: true,
+      familyMemberRelation: true,
+      clinic: {
+        select: {
+          id: true,
+          clinicName: true,
+          location: true,
+        },
+      },
       doctor: {
         select: {
           id: true,
@@ -609,12 +623,6 @@ const getBookingHistory = async (
           },
         },
       },
-      // workingSlot: {
-      //     select: {
-      //         startTime: true,
-      //         endTime: true
-      //     }
-      // }
     },
   });
 
@@ -744,6 +752,19 @@ const getManagerBookingHistory = async (
       serialNumber: true,
       startTime: true,
       endTime: true,
+      approximateEstimatedTime: true,
+      cancellationReason: true,
+      rejectionReason: true,
+      bookedFor: true,
+      familyMemberName: true,
+      familyMemberRelation: true,
+      clinic: {
+        select: {
+          id: true,
+          clinicName: true,
+          location: true,
+        },
+      },
       doctor: {
         select: {
           id: true,
@@ -769,12 +790,6 @@ const getManagerBookingHistory = async (
           },
         },
       },
-      // workingSlot: {
-      //     select: {
-      //         startTime: true,
-      //         endTime: true
-      //     }
-      // }
     },
   });
 
@@ -899,625 +914,144 @@ const getClinicManagerStats = async (userId: string) => {
   };
 };
 
-const updateAppointmentStatus = async (
-  userId: string,
+const handleUnifiedStatusChange = async (
   bookingId: string,
   status: BookingStatus,
+  userId: string,
+  role: "CLINIC" | "MANAGER" | "DOCTOR",
+  reason?: string,
 ) => {
   const appointment = await prisma.bookingAppointment.findUnique({
     where: { id: bookingId },
     include: {
-      patient: {
-        select: {
-          id: true,
-          user: true,
-        },
-      },
-      doctor: {
-        select: {
-          user: {
-            select: {
-              fullName: true,
-            },
-          },
-        },
-      },
-      clinic: {
-        select: {
-          clinicName: true,
-        },
-      },
+      patient: { select: { id: true, userId: true, user: true } },
+      doctor: { select: { id: true, userId: true, user: true } },
+      clinic: { select: { id: true, userId: true, user: true, clinicName: true } },
     },
   });
+
   if (!appointment) {
     throw new ApiError(httpStatus.NOT_FOUND, "Booking not found");
   }
 
-  const clinic = await prisma.clinic.findUnique({
-    where: { id: appointment.clinicId },
-    select: {
-      userId: true,
-      user: {
-        select: {
-          wallet: true,
-          serviceFree: true,
-        },
-      },
-    },
-  });
-
-  if (!clinic) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
-  }
-
-  const adminUser = await prisma.user.findUnique({
-    where: { phoneNumber: `${process.env.ADMIN_PHONE_NUMBER}` },
-  });
-
-  if (!adminUser) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Admin not found");
-  }
-
-  const patient = await prisma.patient.findUnique({
-    where: { id: appointment.patientId },
-    select: {
-      user: true,
-    },
-  });
-
-  if (!patient) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Patient not found");
-  }
-
-  if (status === BookingStatus.CANCELLED) {
-    if (appointment.status === BookingStatus.CANCELLED) {
-      throw new ApiError(
-        httpStatus.BAD_REQUEST,
-        "Appointment is already cancelled",
-      );
-    }
-
-    if (appointment.status === BookingStatus.COMPLETE) {
-      throw new ApiError(
-        httpStatus.BAD_REQUEST,
-        "Appointment is already completed",
-      );
-    }
-
-    const updateBooking = await prisma.$transaction(async (tx) => {
-      // Patient wallet increment
-      await tx.user.update({
-        where: { id: patient.user.id },
-        data: {
-          wallet: {
-            increment: appointment.patientServiceFee,
-          },
-        },
-      });
-
-      // Clinic wallet increment
-      await tx.user.update({
-        where: { id: clinic.userId },
-        data: {
-          wallet: {
-            increment: appointment.clinicServiceFee,
-          },
-        },
-      });
-
-      // Admin wallet decrement
-      await tx.user.update({
-        where: { id: adminUser.id },
-        data: {
-          wallet: {
-            decrement:
-              appointment.clinicServiceFee + appointment.patientServiceFee,
-          },
-        },
-      });
-
-
-      // if Clinic pay
-      if (clinic.user.serviceFree > 0) {
-        // Clinic wallet increment
-        await tx.user.update({
-          where: { id: clinic.userId },
-          data: {
-            wallet: {
-              increment: appointment.clinicServiceFee,
-            },
-          },
-        });
-
-        // Clinic refund record
-        await tx.topUp.create({
-          data: {
-            userId: clinic.userId,
-            type: TopUpType.REFUND,
-            amount: appointment.clinicServiceFee,
-            appointmentId: bookingId,
-          },
-        });
-
-        // Admin wallet decrement
-        await tx.user.update({
-          where: { id: adminUser.id },
-          data: {
-            wallet: {
-              decrement:
-                appointment.clinicServiceFee,
-            },
-          },
-        });
-      }
-
-
-
-      // Update Booking
-      const updateBooking = await tx.bookingAppointment.update({
-        where: { id: bookingId },
-        data: {
-          status: status,
-        },
-      });
-      return updateBooking;
-    });
-
-
-    // Cancel pending-timeout job (clinic has now responded — either CONFIRMED or CANCELLED)
-    try {
-      await BookingSchedulerService.cancelPendingBookingTimeout(bookingId);
-      console.log(`✅ Cancelled PENDING_TIMEOUT for appointment ${bookingId}`);
-    } catch (error) {
-      console.error(`⚠️ Error cancelling PENDING_TIMEOUT for ${bookingId}:`, error);
-    }
-
-    // Cancel scheduled reminder notifications (Redis + BullMQ)
-    try {
-      await BookingSchedulerService.cancelBookingNotifications(bookingId);
-      console.log(`✅ Cancelled reminder notifications for appointment ${bookingId}`);
-    } catch (error) {
-      console.error(`⚠️ Error cancelling reminder notifications for appointment ${bookingId}:`, error);
-      // Don't throw error - cancellation is successful even if notification cleanup fails
-    }
-
-    // Patient notification
-    await Notification.PatientNotification(
-      updateBooking.id,
-      updateBooking.patientId,
-      'APPOINTMENT_CANCELLED',
-      'Appointment Cancelled',
-      `Your appointment with Dr. ${appointment.doctor?.user?.fullName || 'the doctor'} has been cancelled.`,
-      patient.user.fcmToken as string,
-    );
-
-    return updateBooking;
-  }
+  let result: any;
 
   if (status === BookingStatus.CONFIRMED) {
-    if (appointment.status === BookingStatus.CONFIRMED) {
-      throw new ApiError(
-        httpStatus.BAD_REQUEST,
-        "Appointment is already confirmed",
+    result = await BookingService.confirmBooking(bookingId, userId);
+  } else if (status === BookingStatus.CANCELLED) {
+    result = await BookingService.cancelBooking(bookingId, userId, "CLINIC", reason);
+  } else if (status === BookingStatus.REJECTED) {
+    result = await BookingService.rejectBooking(bookingId, reason, "CLINIC");
+  } else if (status === BookingStatus.COMPLETE) {
+    result = await BookingService.completeBooking(bookingId);
+  } else if (status === BookingStatus.ARRIVED) {
+    result = await prisma.bookingAppointment.update({
+      where: { id: bookingId },
+      data: { status: BookingStatus.ARRIVED },
+    });
+
+    if (appointment.patient?.user?.fcmToken) {
+      await Notification.PatientNotification(
+        result.id,
+        result.patientId,
+        "APPOINTMENT_ARRIVED",
+        "Arrival Recorded",
+        `You have been marked as arrived for your appointment with Dr. ${
+          appointment.doctor?.user?.fullName || "the doctor"
+        }.`,
+        appointment.patient.user.fcmToken,
       );
     }
-    return await BookingService.confirmBooking(bookingId, userId);
-  }
+  } else if (status === BookingStatus.INPROGRESS) {
+    result = await prisma.bookingAppointment.update({
+      where: { id: bookingId },
+      data: { status: BookingStatus.INPROGRESS },
+    });
 
-  if (status === BookingStatus.REJECTED) {
-    if (appointment.status === BookingStatus.PENDING) {
-      return await BookingService.rejectBooking(bookingId, undefined, "CLINIC");
+    if (appointment.patient?.user?.fcmToken) {
+      await Notification.PatientNotification(
+        result.id,
+        result.patientId,
+        "APPOINTMENT_INPROGRESS",
+        "Consultation In Progress",
+        `Your consultation with Dr. ${
+          appointment.doctor?.user?.fullName || "the doctor"
+        } is now in progress.`,
+        appointment.patient.user.fcmToken,
+      );
     }
-    throw new ApiError(
-      httpStatus.BAD_REQUEST,
-      `Cannot reject appointment with status ${appointment.status}`,
-    );
+  } else if (status === BookingStatus.NOT_SHOW) {
+    const noShowReasonText = reason?.trim() || "Patient did not show up";
+    result = await prisma.bookingAppointment.update({
+      where: { id: bookingId },
+      data: {
+        status: BookingStatus.NOT_SHOW,
+        cancellationReason: noShowReasonText,
+      },
+    });
+
+    try {
+      await BookingSchedulerService.cancelBookingNotifications(bookingId);
+      await BookingSchedulerService.cancelConfirmedBookingTimeout(bookingId);
+    } catch (e) {
+      // non-blocking
+    }
+
+    if (appointment.patient?.user?.fcmToken) {
+      await Notification.PatientNotification(
+        result.id,
+        result.patientId,
+        "APPOINTMENT_NOT_SHOW",
+        "Marked as No Show",
+        `Your appointment was marked as No Show. Reason: ${noShowReasonText}`,
+        appointment.patient.user.fcmToken,
+      );
+    }
+  } else {
+    result = await prisma.bookingAppointment.update({
+      where: { id: bookingId },
+      data: { status },
+    });
   }
 
-  const updatedBooking = await prisma.bookingAppointment.update({
-    where: { id: bookingId },
-    data: { status: status },
-  });
-
-  // Cancel CONFIRMED_TIMEOUT job — clinic has now manually updated the status
+  // Real-time synchronization across all three interfaces
   try {
-    await BookingSchedulerService.cancelConfirmedBookingTimeout(bookingId);
-    console.log(`✅ Cancelled CONFIRMED_TIMEOUT for appointment ${bookingId} (status updated to ${status})`);
-  } catch (error) {
-    console.error(`⚠️ Error cancelling CONFIRMED_TIMEOUT for ${bookingId}:`, error);
+    broadcastBookingUpdate({
+      bookingId: result.id,
+      status: result.status,
+      clinicId: appointment.clinicId,
+      doctorId: appointment.doctorId,
+      patientId: appointment.patientId,
+      patientUserId: appointment.patient?.userId,
+      clinicUserId: appointment.clinic?.userId,
+      doctorUserId: appointment.doctor?.userId,
+      reason: reason || result.cancellationReason || result.rejectionReason,
+      serialNumber: appointment.serialNumber,
+      consultDate: appointment.consultDate,
+    });
+  } catch (err) {
+    console.error("WS broadcast error:", err);
   }
 
-  // Patient notification for other status changes
-  await Notification.PatientNotification(
-    updatedBooking.id,
-    updatedBooking.patientId,
-    `APPOINTMENT_${status}`,
-    `Appointment ${status.charAt(0) + status.slice(1).toLowerCase()}`,
-    `Your appointment status has been updated to ${status}.`,
-    patient.user.fcmToken as string,
-  );
+  return result;
+};
 
-  return updatedBooking;
+const updateAppointmentStatus = async (
+  userId: string,
+  bookingId: string,
+  status: BookingStatus,
+  reason?: string,
+) => {
+  return handleUnifiedStatusChange(bookingId, status, userId, "CLINIC", reason);
 };
 
 const managerUpdateAppointmentStatus = async (
   userId: string,
   bookingId: string,
   status: BookingStatus,
+  reason?: string,
 ) => {
-  const userWithManager = await prisma.user.findUnique({
-    where: { id: userId },
-    include: {
-      manager: true,
-    },
-  });
-
-  const manager = userWithManager?.manager[0];
-  if (!manager || !manager.clinicId) {
-    throw new ApiError(
-      httpStatus.FORBIDDEN,
-      "You are not authorized as a clinic manager",
-    );
-  }
-
-  const appointment = await prisma.bookingAppointment.findUnique({
-    where: { id: bookingId },
-    include: {
-      patient: {
-        select: {
-          id: true,
-          user: true,
-        },
-      },
-      doctor: {
-        select: {
-          user: {
-            select: {
-              fullName: true,
-            },
-          },
-        },
-      },
-      clinic: {
-        select: {
-          clinicName: true,
-        },
-      },
-    },
-  });
-  if (!appointment) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Booking not found");
-  }
-
-  if (appointment.clinicId !== manager.clinicId) {
-    throw new ApiError(
-      httpStatus.FORBIDDEN,
-      "This booking does not belong to your clinic",
-    );
-  }
-
-  const clinic = await prisma.clinic.findUnique({
-    where: { id: appointment.clinicId },
-    select: {
-      userId: true,
-      user: {
-        select: {
-          wallet: true,
-          serviceFree: true,
-        },
-      },
-    },
-  });
-
-  if (!clinic) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
-  }
-
-  const adminUser = await prisma.user.findUnique({
-    where: { phoneNumber: `${process.env.ADMIN_PHONE_NUMBER}` },
-  });
-
-  if (!adminUser) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Admin not found");
-  }
-
-  const patient = await prisma.patient.findUnique({
-    where: { id: appointment.patientId },
-    select: {
-      user: true,
-    },
-  });
-
-  if (!patient) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Patient not found");
-  }
-
-  if (status === BookingStatus.CANCELLED) {
-    if (appointment.status === BookingStatus.CANCELLED) {
-      throw new ApiError(
-        httpStatus.BAD_REQUEST,
-        "Appointment is already cancelled",
-      );
-    }
-
-    if (appointment.status === BookingStatus.COMPLETE) {
-      throw new ApiError(
-        httpStatus.BAD_REQUEST,
-        "Appointment is already completed",
-      );
-    }
-
-    const updateBooking = await prisma.$transaction(async (tx) => {
-      // Patient wallet increment
-      await tx.user.update({
-        where: { id: patient.user.id },
-        data: {
-          wallet: {
-            increment: appointment.patientServiceFee,
-          },
-        },
-      });
-
-      // Clinic wallet increment
-      await tx.user.update({
-        where: { id: clinic.userId },
-        data: {
-          wallet: {
-            increment: appointment.clinicServiceFee,
-          },
-        },
-      });
-
-      // Admin wallet decrement
-      await tx.user.update({
-        where: { id: adminUser.id },
-        data: {
-          wallet: {
-            decrement:
-              appointment.clinicServiceFee + appointment.patientServiceFee,
-          },
-        },
-      });
-
-
-      // if Clinic pay
-      if (clinic.user.serviceFree > 0) {
-        // Clinic wallet increment
-        await tx.user.update({
-          where: { id: clinic.userId },
-          data: {
-            wallet: {
-              increment: appointment.clinicServiceFee,
-            },
-          },
-        });
-
-        // Clinic refund record
-        await tx.topUp.create({
-          data: {
-            userId: clinic.userId,
-            type: TopUpType.REFUND,
-            amount: appointment.clinicServiceFee,
-            appointmentId: bookingId,
-          },
-        });
-
-        // Admin wallet decrement
-        await tx.user.update({
-          where: { id: adminUser.id },
-          data: {
-            wallet: {
-              decrement:
-                appointment.clinicServiceFee,
-            },
-          },
-        });
-      }
-
-      // Update Booking
-      const updateBooking = await tx.bookingAppointment.update({
-        where: { id: bookingId },
-        data: {
-          status: status,
-        },
-      });
-      return updateBooking;
-    });
-
-    // Cancel pending-timeout job (clinic has now responded — either CONFIRMED or CANCELLED)
-    try {
-      await BookingSchedulerService.cancelPendingBookingTimeout(bookingId);
-      console.log(`✅ Cancelled PENDING_TIMEOUT for appointment ${bookingId}`);
-    } catch (error) {
-      console.error(`⚠️ Error cancelling PENDING_TIMEOUT for ${bookingId}:`, error);
-    }
-
-    // Cancel scheduled reminder notifications (Redis + BullMQ)
-    try {
-      await BookingSchedulerService.cancelBookingNotifications(bookingId);
-      console.log(`✅ Cancelled reminder notifications for appointment ${bookingId}`);
-    } catch (error) {
-      console.error(`⚠️ Error cancelling reminder notifications for appointment ${bookingId}:`, error);
-      // Don't throw error - cancellation is successful even if notification cleanup fails
-    }
-
-    // Patient notification
-    await Notification.PatientNotification(
-      updateBooking.id,
-      updateBooking.patientId,
-      'APPOINTMENT_CANCELLED',
-      'Appointment Cancelled',
-      `Your appointment with Dr. ${appointment.doctor?.user?.fullName || 'the doctor'} has been cancelled.`,
-      patient.user.fcmToken as string,
-    );
-
-    return updateBooking;
-  }
-
-  if (status === BookingStatus.CONFIRMED) {
-    if (appointment.status === BookingStatus.CONFIRMED) {
-      throw new ApiError(
-        httpStatus.BAD_REQUEST,
-        "Appointment is already confirmed",
-      );
-    }
-
-    if (appointment.status === BookingStatus.COMPLETE) {
-      throw new ApiError(
-        httpStatus.BAD_REQUEST,
-        "Appointment is already completed",
-      );
-    }
-
-    if (clinic.user.wallet < clinic.user.serviceFree) {
-      throw new ApiError(httpStatus.BAD_REQUEST, "Insufficient wallet balance");
-    }
-
-    const updateBooking = await prisma.$transaction(async (tx) => {
-      // Clinic wallet decrement
-      await tx.user.update({
-        where: { id: clinic.userId },
-        data: {
-          wallet: {
-            decrement: clinic.user.serviceFree,
-          },
-        },
-      });
-
-      // Admin wallet increment
-      await tx.user.update({
-        where: { id: adminUser.id },
-        data: {
-          wallet: {
-            increment: clinic.user.serviceFree,
-          },
-        },
-      });
-
-      //  clinic service free
-      await tx.topUp.create({
-        data: {
-          userId: clinic.userId,
-          amount: clinic.user.serviceFree,
-          appointmentId: bookingId,
-          type: TopUpType.BOOKING,
-        },
-      });
-
-      // Admin service free
-      await tx.topUp.create({
-        data: {
-          userId: adminUser.id,
-          amount: clinic.user.serviceFree,
-          appointmentId: bookingId,
-          type: TopUpType.BOOKING,
-        },
-      });
-
-      return await tx.bookingAppointment.update({
-        where: { id: bookingId },
-        data: {
-          status: status,
-          clinicServiceFee: clinic.user.serviceFree,
-        },
-      });
-    });
-
-    // Schedule CONFIRMED_TIMEOUT job — fires 30 min after the doctor's slot endTime.
-    // If clinic does not update visit status by then, appointment auto-closes
-    // and admin retains all fees.
-    try {
-      const clinicForTimeout = await prisma.clinic.findUnique({
-        where: { userId: clinic.userId },
-        select: { id: true },
-      });
-      const adminForTimeout = await prisma.user.findUnique({
-        where: { phoneNumber: `${process.env.ADMIN_PHONE_NUMBER}` },
-        select: { id: true },
-      });
-
-      if (clinicForTimeout && adminForTimeout) {
-        await BookingSchedulerService.scheduleConfirmedBookingTimeout({
-          appointmentId: updateBooking.id,
-          patientId: updateBooking.patientId,
-          clinicId: clinicForTimeout.id,
-          clinicUserId: clinic.userId,
-          adminUserId: adminForTimeout.id,
-          patientServiceFee: updateBooking.patientServiceFee,
-          clinicServiceFee: updateBooking.clinicServiceFee,
-          consultDate: updateBooking.consultDate,
-          endTime: updateBooking.endTime!,
-        });
-        console.log(`⏳ Scheduled CONFIRMED_TIMEOUT for appointment ${bookingId}`);
-      }
-    } catch (error) {
-      console.error(`⚠️ Error scheduling CONFIRMED_TIMEOUT for ${bookingId}:`, error);
-      // Non-fatal — confirmation already succeeded
-    }
-
-    // Cancel the PENDING_TIMEOUT job (clinic has now confirmed)
-    try {
-      await BookingSchedulerService.cancelPendingBookingTimeout(bookingId);
-      console.log(`✅ Cancelled PENDING_TIMEOUT for appointment ${bookingId}`);
-    } catch (error) {
-      console.error(`⚠️ Error cancelling PENDING_TIMEOUT for ${bookingId}:`, error);
-    }
-
-    // Schedule reminder notifications (Redis + BullMQ) for 24h and 3h before appointment
-    try {
-      await BookingSchedulerService.scheduleBookingNotifications({
-        appointmentId: updateBooking.id,
-        patientId: updateBooking.patientId,
-        doctorId: updateBooking.doctorId,
-        clinicId: updateBooking.clinicId,
-        consultDate: updateBooking.consultDate,
-        startTime: updateBooking.startTime!,
-        endTime: updateBooking.endTime!,
-        status: updateBooking.status,
-      });
-      console.log(`✅ Scheduled reminder notifications for appointment ${bookingId}`);
-    } catch (error) {
-      console.error(`⚠️ Error scheduling reminder notifications for appointment ${bookingId}:`, error);
-      // Don't throw error - confirmation is successful even if notification scheduling fails
-    }
-
-    // Patient notification
-    await Notification.PatientNotification(
-      updateBooking.id,
-      updateBooking.patientId,
-      'APPOINTMENT_CONFIRMED',
-      'Appointment Confirmed',
-      `Your appointment with Dr. ${appointment.doctor?.user?.fullName || 'the doctor'} at ${appointment.clinic?.clinicName || 'the clinic'} has been confirmed for ${new Date(updateBooking.consultDate).toLocaleDateString()} at ${updateBooking.startTime}.`,
-      patient.user.fcmToken as string,
-    );
-
-    return updateBooking;
-  }
-
-  const updatedBooking = await prisma.bookingAppointment.update({
-    where: { id: bookingId },
-    data: { status: status },
-  });
-
-  // Cancel CONFIRMED_TIMEOUT job — clinic has now manually updated the status
-  try {
-    await BookingSchedulerService.cancelConfirmedBookingTimeout(bookingId);
-    console.log(`✅ Cancelled CONFIRMED_TIMEOUT for appointment ${bookingId} (status updated to ${status})`);
-  } catch (error) {
-    console.error(`⚠️ Error cancelling CONFIRMED_TIMEOUT for ${bookingId}:`, error);
-  }
-
-  // Patient notification for other status changes
-  await Notification.PatientNotification(
-    updatedBooking.id,
-    updatedBooking.patientId,
-    `APPOINTMENT_${status}`,
-    `Appointment ${status.charAt(0) + status.slice(1).toLowerCase()}`,
-    `Your appointment status has been updated to ${status}.`,
-    patient.user.fcmToken as string,
-  );
-
-  return updatedBooking;
+  return handleUnifiedStatusChange(bookingId, status, userId, "MANAGER", reason);
 };
 
 const getClinicStats = async (userId: string) => {
