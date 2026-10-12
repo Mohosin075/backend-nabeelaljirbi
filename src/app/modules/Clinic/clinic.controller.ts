@@ -233,12 +233,13 @@ const clearPhotoGalleries = catchAsync(async (req, res) => {
 
 const updateBookingStatus = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.id;
-  const { bookingId, status } = req.body;
+  const { bookingId, status, reason } = req.body;
 
   const result = await ClinicService.updateBookingStatus(
     userId!,
     bookingId,
     status,
+    reason,
   );
 
   sendResponse(res, {

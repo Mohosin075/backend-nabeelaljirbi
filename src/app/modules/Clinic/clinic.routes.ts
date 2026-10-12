@@ -93,7 +93,7 @@ router.delete(
 
 router.patch(
   "/bookings/status",
-  auth(),
+  auth(UserRole.CLINIC, UserRole.MANAGER),
   ClinicController.updateBookingStatus
 );
 
@@ -111,13 +111,13 @@ router.get(
 
 router.patch(
   "/update/appointment-status",
-  auth(),
+  auth(UserRole.CLINIC, UserRole.MANAGER),
   ClinicController.updateAppointmentStatus
 );
 
 router.patch(
   "/manager-update/appointment-status",
-  auth(),
+  auth(UserRole.MANAGER, UserRole.CLINIC),
   ClinicController.managerUpdateAppointmentStatus
 );
 

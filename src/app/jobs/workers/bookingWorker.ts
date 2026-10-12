@@ -359,6 +359,7 @@ export const appointmentLifecycleWorker = new Worker<
           data: {
             status: BookingStatus.NOT_SHOW,
             cancellationReason: "Auto-settled: Neglected (no arrival recorded)",
+            ...({ noShowReason: "Auto-settled: Neglected (no arrival recorded)" } as any),
           },
         });
 

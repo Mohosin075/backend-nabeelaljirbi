@@ -818,9 +818,10 @@ const cancelBooking = async (
 
   // Case 1: If status is PENDING, simply unfreeze hold and reject
   if (booking.status === BookingStatus.PENDING) {
+    const cancelReason = reason?.trim() || `Cancelled by ${cancelledBy.toLowerCase()}`;
     return await rejectBooking(
       appointmentId,
-      `Cancelled by ${cancelledBy.toLowerCase()}`,
+      cancelReason,
       cancelledBy
     );
   }

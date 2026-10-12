@@ -469,31 +469,15 @@ const updateBookingStatus = async (
   userId: string,
   bookingId: string,
   status: string,
+  reason?: string,
 ) => {
-  const booking = await prisma.bookingAppointment.findUnique({
-    where: { id: bookingId },
-  });
-  if (!booking || booking.clinicId !== userId) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Booking not found");
-  }
-
-  const updatedBooking = await prisma.bookingAppointment.update({
-    where: { id: bookingId },
-    data: { status: status as any },
-  });
-
-  // Create patient notification
-  await prisma.patientNotification.create({
-    data: {
-      patientId: updatedBooking.patientId,
-      bookingAppointmentId: updatedBooking.id,
-      notificationType: `APPOINTMENT_${status}`,
-      title: `Appointment ${status.charAt(0) + status.slice(1).toLowerCase()}`,
-      description: `Your appointment status has been updated to ${status}.`,
-    },
-  });
-
-  return updatedBooking;
+  return handleUnifiedStatusChange(
+    bookingId,
+    status as BookingStatus,
+    userId,
+    "CLINIC",
+    reason,
+  );
 };
 
 const getBookingHistory = async (
@@ -934,6 +918,58 @@ const handleUnifiedStatusChange = async (
     throw new ApiError(httpStatus.NOT_FOUND, "Booking not found");
   }
 
+  // Authorization check
+  if (role === "CLINIC" && appointment.clinic?.userId !== userId) {
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      "You are not authorized to update this appointment"
+    );
+  } else if (role === "MANAGER") {
+    const manager = await prisma.manager.findFirst({
+      where: { userId, clinicId: appointment.clinicId },
+    });
+    if (!manager) {
+      throw new ApiError(
+        httpStatus.FORBIDDEN,
+        "Manager does not belong to this clinic"
+      );
+    }
+  } else if (role === "DOCTOR" && appointment.doctor?.userId !== userId) {
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      "You are not authorized to update this appointment"
+    );
+  }
+
+  // Terminal state protection: terminal states cannot be transitioned further
+  const terminalStatuses: BookingStatus[] = [
+    BookingStatus.COMPLETE,
+    BookingStatus.CANCELLED,
+    BookingStatus.REJECTED,
+    BookingStatus.NOT_SHOW,
+  ];
+
+  if (terminalStatuses.includes(appointment.status)) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      `Cannot change status of an appointment that is already ${appointment.status}`
+    );
+  }
+
+  // Core lifecycle transitions: PENDING can only become CONFIRMED, REJECTED, or CANCELLED
+  if (
+    appointment.status === BookingStatus.PENDING &&
+    (status === BookingStatus.ARRIVED ||
+      status === BookingStatus.INPROGRESS ||
+      status === BookingStatus.COMPLETE ||
+      status === BookingStatus.NOT_SHOW)
+  ) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      `Appointment is PENDING. It must be CONFIRMED before transitioning to ${status}`
+    );
+  }
+
   let result: any;
 
   if (status === BookingStatus.CONFIRMED) {
@@ -981,12 +1017,19 @@ const handleUnifiedStatusChange = async (
       );
     }
   } else if (status === BookingStatus.NOT_SHOW) {
-    const noShowReasonText = reason?.trim() || "Patient did not show up";
+    const noShowReasonText = reason?.trim();
+    if (!noShowReasonText) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        "A reason is required when marking an appointment as No Show"
+      );
+    }
     result = await prisma.bookingAppointment.update({
       where: { id: bookingId },
       data: {
         status: BookingStatus.NOT_SHOW,
         cancellationReason: noShowReasonText,
+        ...({ noShowReason: noShowReasonText } as any),
       },
     });
 

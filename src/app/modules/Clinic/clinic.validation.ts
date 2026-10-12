@@ -29,8 +29,17 @@ const createPhotoGalleryValidationSchema = z.object({
 });
 
 const updateBookingStatusValidationSchema = z.object({
-  bookingId: z.string(),
-  status: z.enum(["PENDING", "INPROGRESS", "COMPLETE"]),
+  bookingId: z.string({ required_error: "Booking ID is required" }),
+  status: z.enum([
+    "CONFIRMED",
+    "ARRIVED",
+    "INPROGRESS",
+    "COMPLETE",
+    "NOT_SHOW",
+    "CANCELLED",
+    "REJECTED",
+  ]),
+  reason: z.string().optional(),
 });
 
 export const clinicValidation = {
