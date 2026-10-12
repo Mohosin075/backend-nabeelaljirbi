@@ -1106,7 +1106,12 @@ const getDoctor = async (doctorId: string) => {
     schedule: doctorUser.doctor.workingDays,
     about: doctorUser.doctor.about,
 
-    clinicId: doctorUser.doctor.clinic?.userId,
+    clinicId:
+      doctorUser.doctor.clinic?.id ??
+      doctorUser.doctor.clinicId ??
+      (doctorUser.doctor.doctorClinics.length > 0
+        ? doctorUser.doctor.doctorClinics[0].clinic.id
+        : doctorUser.doctor.clinic?.userId),
     doctorId: doctorUser.doctor.id,
   };
 };

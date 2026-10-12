@@ -39,7 +39,38 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
     throw new ApiError(httpStatus.NOT_FOUND, "Patient profile not found");
   }
 
-  // 2. Fetch doctor
+  // 2. Resolve clinic: incoming clinicId might be Clinic.id, Clinic.userId, or doctor's direct clinic
+  let resolvedClinicId = clinicId;
+  if (!resolvedClinicId) {
+    const doc = await prisma.doctor.findUnique({
+      where: { id: doctorId },
+      select: {
+        clinicId: true,
+        doctorClinics: { select: { clinicId: true }, where: { isActive: true } },
+      },
+    });
+    resolvedClinicId = doc?.clinicId || doc?.doctorClinics[0]?.clinicId || "";
+  }
+
+  let clinic = await prisma.clinic.findUnique({
+    where: { id: resolvedClinicId },
+    include: { user: true },
+  });
+
+  if (!clinic) {
+    clinic = await prisma.clinic.findFirst({
+      where: { userId: resolvedClinicId },
+      include: { user: true },
+    });
+  }
+
+  if (!clinic) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
+  }
+
+  const effectiveClinicId = clinic.id;
+
+  // 3. Fetch doctor and verify affiliation with this clinic
   const doctor = await prisma.doctor.findUnique({
     where: { id: doctorId },
     include: {
@@ -50,7 +81,7 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
         },
       },
       doctorClinics: {
-        where: { clinicId, isActive: true },
+        where: { isActive: true },
       },
     },
   });
@@ -61,22 +92,15 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
 
   // Verify doctor belongs to or is linked with the clinic
   const isLinkedToClinic =
-    doctor.clinicId === clinicId || doctor.doctorClinics.length > 0;
+    doctor.clinicId === effectiveClinicId ||
+    doctor.doctorClinics.some(
+      (dc) => dc.clinicId === effectiveClinicId && dc.isActive
+    );
   if (!isLinkedToClinic) {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
       "Doctor is not affiliated with this clinic"
     );
-  }
-
-  // 3. Fetch clinic
-  const clinic = await prisma.clinic.findUnique({
-    where: { id: clinicId },
-    include: { user: true },
-  });
-
-  if (!clinic) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
   }
 
   // 4. Validate Advance-Booking Window (configurable per clinic/admin, default 14 days)
@@ -126,10 +150,16 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
   const workingDay = await prisma.workingDay.findFirst({
     where: {
       doctorId,
-      clinicId,
+      OR: [
+        { clinicId: effectiveClinicId },
+        { clinicId: null },
+      ],
       day: targetDayOfWeek,
       isActive: true,
     },
+    orderBy: [
+      { clinicId: "desc" },
+    ],
     include: {
       slots: true,
     },
@@ -163,7 +193,7 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
   const existingActiveBookingsCount = await prisma.bookingAppointment.count({
     where: {
       doctorId,
-      clinicId,
+      clinicId: effectiveClinicId,
       workingSlotId: workingSlot.id,
       consultDate: {
         gte: dayStart,
@@ -262,7 +292,7 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
 
     const createdBooking = await tx.bookingAppointment.create({
       data: {
-        clinicId,
+        clinicId: effectiveClinicId,
         doctorId,
         patientId: user.patient!.id,
         workingSlotId: workingSlot.id,
