@@ -174,11 +174,19 @@ export const appointmentLifecycleWorker = new Worker<
           data: { status: BookingStatus.NOT_UPDATED },
         });
 
-        // 3. Refund patientServiceFee back to the patient
-        await tx.user.update({
-          where: { id: patientUserId },
-          data: { wallet: { increment: patientServiceFee } },
-        });
+        // 3. Unfreeze patient hold or refund patientServiceFee back to the patient
+        const holdAmount = (appointment as any).holdAmount || 0;
+        if (holdAmount > 0) {
+          await tx.user.update({
+            where: { id: patientUserId },
+            data: { frozenWallet: { decrement: holdAmount } },
+          });
+        } else if (patientServiceFee > 0) {
+          await tx.user.update({
+            where: { id: patientUserId },
+            data: { wallet: { increment: patientServiceFee } },
+          });
+        }
 
         // 4. Penalty for clinic: deduct from clinic wallet
         if (clinicPenalty > 0) {
@@ -188,8 +196,9 @@ export const appointmentLifecycleWorker = new Worker<
           });
         }
 
-        // 5. Admin wallet: decrement patient refund, increment clinic penalty
-        const adminNetChange = clinicPenalty - patientServiceFee;
+        // 5. Admin wallet: adjust for clinic penalty and patient refund (if deducted)
+        const patientDeductedFee = holdAmount > 0 ? 0 : patientServiceFee;
+        const adminNetChange = clinicPenalty - patientDeductedFee;
         if (adminNetChange !== 0) {
           if (adminNetChange > 0) {
             await tx.user.update({
@@ -205,24 +214,26 @@ export const appointmentLifecycleWorker = new Worker<
         }
 
         // 6. TopUp records for audit trail
-        // Patient refund
-        await tx.topUp.create({
-          data: {
-            userId: patientUserId,
-            amount: patientServiceFee,
-            appointmentId,
-            type: TopUpType.REFUND,
-          },
-        });
-        // Admin giving back patient refund
-        await tx.topUp.create({
-          data: {
-            userId: adminUserId,
-            amount: patientServiceFee,
-            appointmentId,
-            type: TopUpType.REFUND,
-          },
-        });
+        if (patientDeductedFee > 0) {
+          // Patient refund
+          await tx.topUp.create({
+            data: {
+              userId: patientUserId,
+              amount: patientDeductedFee,
+              appointmentId,
+              type: TopUpType.REFUND,
+            },
+          });
+          // Admin giving back patient refund
+          await tx.topUp.create({
+            data: {
+              userId: adminUserId,
+              amount: patientDeductedFee,
+              appointmentId,
+              type: TopUpType.REFUND,
+            },
+          });
+        }
 
         // Audit trail for clinic penalty
         if (clinicPenalty > 0) {

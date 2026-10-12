@@ -50,8 +50,10 @@ const confirmBooking = catchAsync(async (req: Request, res: Response) => {
 
 const cancelBooking = catchAsync(async (req: Request, res: Response) => {
   const { appointmentId } = req.params;
+  const userId = req.user?.id;
+  const role = req.user?.role;
 
-  const result = await BookingService.cancelBooking(appointmentId);
+  const result = await BookingService.cancelBooking(appointmentId, userId, role);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

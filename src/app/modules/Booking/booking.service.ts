@@ -68,18 +68,20 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
     throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
   }
 
+  if (clinic.user?.banned || (clinic.user as any)?.status === "SUSPENDED") {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "Clinic is currently suspended and cannot accept appointments"
+    );
+  }
+
   const effectiveClinicId = clinic.id;
 
   // 3. Fetch doctor and verify affiliation with this clinic
   const doctor = await prisma.doctor.findUnique({
     where: { id: doctorId },
     include: {
-      user: {
-        select: {
-          fullName: true,
-          profileImage: true,
-        },
-      },
+      user: true,
       doctorClinics: {
         where: { isActive: true },
       },
@@ -88,6 +90,13 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
 
   if (!doctor) {
     throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
+  }
+
+  if (doctor.user?.banned || (doctor.user as any)?.status === "SUSPENDED") {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "Doctor is currently suspended and cannot accept appointments"
+    );
   }
 
   // Verify doctor belongs to or is linked with the clinic
@@ -741,11 +750,17 @@ const getBookings = async (userId: string, role: string, options: any) => {
   };
 };
 
-const cancelBooking = async (appointmentId: string, callerUserId?: string) => {
+const cancelBooking = async (
+  appointmentId: string,
+  callerUserId?: string,
+  callerRole?: string
+) => {
   const booking = await prisma.bookingAppointment.findUnique({
     where: { id: appointmentId },
     include: {
       patient: { include: { user: true } },
+      clinic: { include: { user: true } },
+      doctor: { include: { user: true } },
     },
   });
 
@@ -753,37 +768,177 @@ const cancelBooking = async (appointmentId: string, callerUserId?: string) => {
     throw new ApiError(httpStatus.NOT_FOUND, "Appointment not found");
   }
 
-  // If status is PENDING, simply reject / unfreeze
-  if (booking.status === BookingStatus.PENDING) {
-    return await rejectBooking(appointmentId, "Cancelled by user", "PATIENT");
+  if (
+    booking.status === BookingStatus.CANCELLED ||
+    booking.status === BookingStatus.REJECTED ||
+    booking.status === BookingStatus.COMPLETE
+  ) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      `Cannot cancel appointment with status ${booking.status}`
+    );
   }
 
-  // If status is CONFIRMED, execute cancellation refund
-  const updatedBooking = await prisma.bookingAppointment.update({
-    where: { id: appointmentId },
-    data: {
-      status: BookingStatus.CANCELLED,
-      cancelledBy: "PATIENT",
-    },
-  });
+  // Determine who is cancelling
+  const isPatient =
+    callerRole === "PATIENT" ||
+    (callerUserId && callerUserId === booking.patient.userId);
+  const cancelledBy = isPatient
+    ? "PATIENT"
+    : callerRole === "DOCTOR"
+    ? "DOCTOR"
+    : callerRole === "CLINIC"
+    ? "CLINIC"
+    : "ADMIN";
 
-  await BookingSchedulerService.cancelBookingNotifications(appointmentId);
-  await BookingSchedulerService.cancelPendingBookingTimeout(appointmentId);
-  await BookingSchedulerService.cancelConfirmedBookingTimeout(appointmentId);
+  // Case 1: If status is PENDING, simply unfreeze hold and reject
+  if (booking.status === BookingStatus.PENDING) {
+    return await rejectBooking(
+      appointmentId,
+      `Cancelled by ${cancelledBy.toLowerCase()}`,
+      cancelledBy
+    );
+  }
 
-  await prisma.patientNotification.create({
-    data: {
-      patientId: booking.patientId,
-      bookingAppointmentId: booking.id,
-      notificationType: "APPOINTMENT_CANCELLED",
-      title: "Appointment Cancelled",
-      description: `Your appointment on ${new Date(
-        booking.consultDate
-      ).toLocaleDateString()} has been cancelled.`,
-    },
-  });
+  // Case 2: If status is CONFIRMED, execute cancellation refund
+  if (booking.status === BookingStatus.CONFIRMED) {
+    // If patient-initiated: enforce 12-hour cutoff rule
+    if (isPatient) {
+      const consultDate = new Date(booking.consultDate);
+      let consultHour = 0;
+      let consultMinute = 0;
+      if (booking.startTime) {
+        const parts = booking.startTime.split(":");
+        if (parts.length >= 2) {
+          consultHour = parseInt(parts[0], 10) || 0;
+          consultMinute = parseInt(parts[1], 10) || 0;
+        }
+      }
+      consultDate.setUTCHours(consultHour, consultMinute, 0, 0);
 
-  return updatedBooking;
+      const now = new Date();
+      const diffMs = consultDate.getTime() - now.getTime();
+      const diffHours = diffMs / (1000 * 60 * 60);
+
+      if (diffHours < 12) {
+        throw new ApiError(
+          httpStatus.BAD_REQUEST,
+          "Appointments can only be cancelled at least 12 hours prior to the scheduled time"
+        );
+      }
+    }
+
+    const adminUser = await prisma.user.findUnique({
+      where: { phoneNumber: `${process.env.ADMIN_PHONE_NUMBER}` },
+    });
+
+    const patientUserId = booking.patient.userId;
+    const clinicUserId = booking.clinic.userId;
+    const serviceFeeAmount = booking.serviceFeeAmount || 0;
+    const consultFee = booking.consultFee || 0;
+    const collectionMode = booking.collectionMode || "MODE_A";
+    const totalRefundAmount =
+      booking.holdAmount ||
+      booking.totalAmount ||
+      serviceFeeAmount + (collectionMode === "MODE_B" ? consultFee : 0);
+
+    const updatedBooking = await prisma.$transaction(async (tx) => {
+      // 1. Refund patient wallet in full
+      if (totalRefundAmount > 0) {
+        await tx.user.update({
+          where: { id: patientUserId },
+          data: {
+            wallet: { increment: totalRefundAmount },
+          },
+        });
+
+        await tx.topUp.create({
+          data: {
+            userId: patientUserId,
+            amount: totalRefundAmount,
+            appointmentId: booking.id,
+            type: TopUpType.REFUND,
+          },
+        });
+      }
+
+      // 2. Decrement admin wallet for platform service fee
+      if (adminUser && serviceFeeAmount > 0) {
+        await tx.user.update({
+          where: { id: adminUser.id },
+          data: {
+            wallet: { decrement: serviceFeeAmount },
+          },
+        });
+
+        await tx.topUp.create({
+          data: {
+            userId: adminUser.id,
+            amount: serviceFeeAmount,
+            appointmentId: booking.id,
+            type: TopUpType.REFUND,
+          },
+        });
+      }
+
+      // 3. In Mode B: Decrement clinic wallet for consult fee
+      if (collectionMode === "MODE_B" && consultFee > 0) {
+        await tx.user.update({
+          where: { id: clinicUserId },
+          data: {
+            wallet: { decrement: consultFee },
+          },
+        });
+
+        await tx.topUp.create({
+          data: {
+            userId: clinicUserId,
+            amount: consultFee,
+            appointmentId: booking.id,
+            type: TopUpType.REFUND,
+          },
+        });
+      }
+
+      // 4. Update appointment status
+      const updated = await tx.bookingAppointment.update({
+        where: { id: appointmentId },
+        data: {
+          status: BookingStatus.CANCELLED,
+          cancelledBy,
+          cancellationReason: `Cancelled by ${cancelledBy.toLowerCase()}`,
+        },
+      });
+
+      // 5. Patient notification
+      await tx.patientNotification.create({
+        data: {
+          patientId: booking.patientId,
+          bookingAppointmentId: booking.id,
+          notificationType: "APPOINTMENT_CANCELLED",
+          title: "Appointment Cancelled",
+          description: `Your appointment with Dr. ${
+            booking.doctor?.user?.fullName || "Doctor"
+          } on ${new Date(
+            booking.consultDate
+          ).toLocaleDateString()} has been cancelled. A full refund of ${totalRefundAmount} LYD has been credited to your wallet.`,
+        },
+      });
+
+      return updated;
+    });
+
+    await BookingSchedulerService.cancelBookingNotifications(appointmentId);
+    await BookingSchedulerService.cancelPendingBookingTimeout(appointmentId);
+    await BookingSchedulerService.cancelConfirmedBookingTimeout(appointmentId);
+
+    return updatedBooking;
+  }
+
+  throw new ApiError(
+    httpStatus.BAD_REQUEST,
+    `Cannot cancel appointment with status ${booking.status}`
+  );
 };
 
 const completeBooking = async (appointmentId: string) => {

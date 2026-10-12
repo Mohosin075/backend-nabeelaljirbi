@@ -178,7 +178,11 @@ const cancelAppointment = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { bookingId } = req.params;
 
-  const result = await PatientService.cancelAppointment(userId!, bookingId);
+  const result = await BookingService.cancelBooking(
+    bookingId,
+    userId!,
+    "PATIENT"
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
