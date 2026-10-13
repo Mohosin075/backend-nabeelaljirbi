@@ -1,4 +1,5 @@
-import { Prisma, TopUpType, UserRole, UserStatus, BookingStatus } from "@prisma/client";
+import { AdminTier, Prisma, TopUpType, UserRole, UserStatus, BookingStatus } from "@prisma/client";
+import bcrypt from "bcrypt";
 import { paginationHelpers } from "../../../utils/paginationHelper";
 import prisma from "../../../shared/prisma";
 import { IPaginationOptions } from "../../../interfaces/paginations";
@@ -9,27 +10,49 @@ import { adminNotificationQueue } from "../../jobs";
 import { BookingSchedulerService } from "../../jobs/services/bookingScheduler.service";
 import { broadcastBookingUpdate } from "../../../helpars/socket/socketHandler";
 import { BookingService } from "../Booking/booking.service";
+import { createAuditLog } from "../../utils/auditLogger";
 
 
 
 
 const AdminStats = async () => {
-  const [patientCount, doctorCount, clinicCount] = await Promise.all([
-    prisma.user.count({
-      where: { role: UserRole.PATIENT },
-    }),
-    prisma.user.count({
-      where: { role: UserRole.DOCTOR },
-    }),
-    prisma.user.count({
-      where: { role: UserRole.CLINIC },
-    }),
+  const [
+    patientCount,
+    doctorCount,
+    clinicCount,
+    pendingClinicVerifications,
+    pendingDoctorVerifications,
+    pendingSettlements,
+    openComplaints,
+    totalBookings,
+    pendingBookings,
+    confirmedBookings,
+    completedBookings,
+  ] = await Promise.all([
+    prisma.user.count({ where: { role: UserRole.PATIENT } }),
+    prisma.user.count({ where: { role: UserRole.DOCTOR } }),
+    prisma.user.count({ where: { role: UserRole.CLINIC } }),
+    prisma.clinic.count({ where: { verificationStatus: "PENDING" } }),
+    prisma.doctor.count({ where: { verificationStatus: "PENDING" } }),
+    prisma.settlement.count({ where: { status: "PENDING" } }),
+    prisma.complaint.count({ where: { status: { in: ["PENDING", "UNDER_INVESTIGATION"] } } }),
+    prisma.bookingAppointment.count(),
+    prisma.bookingAppointment.count({ where: { status: BookingStatus.PENDING } }),
+    prisma.bookingAppointment.count({ where: { status: BookingStatus.CONFIRMED } }),
+    prisma.bookingAppointment.count({ where: { status: BookingStatus.COMPLETE } }),
   ]);
 
   return {
     patientCount,
     doctorCount,
     clinicCount,
+    pendingVerifications: pendingClinicVerifications + pendingDoctorVerifications,
+    pendingSettlements,
+    openComplaints,
+    totalBookings,
+    pendingBookings,
+    confirmedBookings,
+    completedBookings,
   };
 };
 
@@ -320,6 +343,8 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
           about: true,
           contactPhone: true,
           adminVerified: true,
+          badgeActive: true,
+          isVisible: true,
           trial: true
         }
       }
@@ -343,6 +368,8 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
     about: user.clinic?.about,
     contactPhone: user.clinic?.contactPhone,
     adminVerified: user.clinic?.adminVerified,
+    badgeActive: user.clinic?.badgeActive || false,
+    isVisible: user.clinic?.isVisible !== false,
     serviceFree: user.serviceFree,
     trial: user.clinic?.trial,
     wallet: user.wallet,
@@ -932,11 +959,763 @@ const overrideAppointmentStatus = async (
   return result;
 };
 
+// ================= SECTION 9: MAIN ADMIN CONTROL CENTER =================
+
+// 1. Clinic Visibility Control
+const updateClinicVisibility = async (clinicId: string, isVisible: boolean, adminUser?: any) => {
+  const existingClinic = await prisma.clinic.findFirst({
+    where: {
+      OR: [{ id: clinicId }, { userId: clinicId }],
+    },
+  });
+
+  if (!existingClinic) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
+  }
+
+  const result = await prisma.clinic.update({
+    where: { id: existingClinic.id },
+    data: { isVisible },
+  });
+
+  await createAuditLog({
+    adminId: adminUser?.id,
+    adminName: adminUser?.fullName,
+    adminTier: adminUser?.adminTier,
+    action: isVisible ? "CLINIC_VISIBILITY_ENABLED" : "CLINIC_VISIBILITY_DISABLED",
+    targetType: "CLINIC",
+    targetId: existingClinic.id,
+    details: { clinicName: existingClinic.clinicName, isVisible },
+  });
+
+  return result;
+};
+
+// 2. Admin Staff (5 Tiers) Management
+const getAdminStaff = async (filters: any, options: IPaginationOptions) => {
+  const { limit, page, skip, sortBy, sortOrder } = paginationHelpers.calculatePagination(options);
+  const { searchTerm, adminTier, status } = filters;
+
+  const andConditions: Prisma.UserWhereInput[] = [{ role: UserRole.ADMIN }];
+
+  if (searchTerm) {
+    andConditions.push({
+      OR: [
+        { fullName: { contains: searchTerm, mode: "insensitive" } },
+        { email: { contains: searchTerm, mode: "insensitive" } },
+        { phoneNumber: { contains: searchTerm, mode: "insensitive" } },
+      ],
+    });
+  }
+
+  if (adminTier) {
+    andConditions.push({ adminTier: adminTier as AdminTier });
+  }
+
+  if (status) {
+    andConditions.push({ status: status as UserStatus });
+  }
+
+  const whereConditions: Prisma.UserWhereInput = andConditions.length > 0 ? { AND: andConditions } : {};
+
+  const [total, result] = await Promise.all([
+    prisma.user.count({ where: whereConditions }),
+    prisma.user.findMany({
+      where: whereConditions,
+      skip,
+      take: limit,
+      orderBy: sortBy && sortOrder ? { [sortBy]: sortOrder } : { createdAt: "desc" },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        phoneNumber: true,
+        role: true,
+        adminTier: true,
+        status: true,
+        profileImage: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    }),
+  ]);
+
+  return {
+    meta: { page, limit, total },
+    data: result,
+  };
+};
+
+const createAdminStaff = async (payload: any, currentAdmin?: any) => {
+  const { fullName, email, phoneNumber, password, adminTier } = payload;
+
+  if (!phoneNumber || !password) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Phone number and password are required");
+  }
+
+  const existingUser = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { phoneNumber },
+        ...(email ? [{ email }] : []),
+      ],
+    },
+  });
+
+  if (existingUser) {
+    throw new ApiError(httpStatus.CONFLICT, "User with this phone number or email already exists");
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 12);
+
+  const newUser = await prisma.user.create({
+    data: {
+      fullName: fullName || "Admin Staff",
+      phoneNumber,
+      email: email || null,
+      password: hashedPassword,
+      role: UserRole.ADMIN,
+      adminTier: (adminTier || AdminTier.OPERATIONS) as AdminTier,
+      status: UserStatus.ACTIVE,
+      profileCompleted: true,
+    },
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      phoneNumber: true,
+      role: true,
+      adminTier: true,
+      status: true,
+      createdAt: true,
+    },
+  });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "CREATE_ADMIN_STAFF",
+    targetType: "USER",
+    targetId: newUser.id,
+    details: { fullName: newUser.fullName, phoneNumber: newUser.phoneNumber, adminTier: newUser.adminTier },
+  });
+
+  return newUser;
+};
+
+const updateAdminStaffTier = async (staffId: string, adminTier: AdminTier, currentAdmin?: any) => {
+  const staff = await prisma.user.findUnique({
+    where: { id: staffId },
+  });
+
+  if (!staff || staff.role !== UserRole.ADMIN) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Admin staff not found");
+  }
+
+  const updatedStaff = await prisma.user.update({
+    where: { id: staffId },
+    data: { adminTier },
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      phoneNumber: true,
+      role: true,
+      adminTier: true,
+      status: true,
+      updatedAt: true,
+    },
+  });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "UPDATE_ADMIN_TIER",
+    targetType: "USER",
+    targetId: staffId,
+    details: { oldTier: staff.adminTier, newTier: adminTier },
+  });
+
+  return updatedStaff;
+};
+
+const toggleAdminStaffStatus = async (staffId: string, status: UserStatus, currentAdmin?: any) => {
+  const staff = await prisma.user.findUnique({
+    where: { id: staffId },
+  });
+
+  if (!staff || staff.role !== UserRole.ADMIN) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Admin staff not found");
+  }
+
+  if (currentAdmin?.id === staffId && status !== UserStatus.ACTIVE) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "You cannot suspend your own administrative account");
+  }
+
+  const updatedStaff = await prisma.user.update({
+    where: { id: staffId },
+    data: { status },
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      phoneNumber: true,
+      role: true,
+      adminTier: true,
+      status: true,
+      updatedAt: true,
+    },
+  });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: status === UserStatus.ACTIVE ? "ACTIVATE_ADMIN_STAFF" : "SUSPEND_ADMIN_STAFF",
+    targetType: "USER",
+    targetId: staffId,
+    details: { status },
+  });
+
+  return updatedStaff;
+};
+
+// 3. Administrative Audit Logs
+const getAuditLogs = async (filters: any, options: IPaginationOptions) => {
+  const { limit, page, skip, sortBy, sortOrder } = paginationHelpers.calculatePagination(options);
+  const { searchTerm, action, targetType, adminId, startDate, endDate } = filters;
+
+  const andConditions: Prisma.AdminAuditLogWhereInput[] = [];
+
+  if (searchTerm) {
+    andConditions.push({
+      OR: [
+        { action: { contains: searchTerm, mode: "insensitive" } },
+        { adminName: { contains: searchTerm, mode: "insensitive" } },
+        { targetType: { contains: searchTerm, mode: "insensitive" } },
+        { targetId: { contains: searchTerm, mode: "insensitive" } },
+      ],
+    });
+  }
+
+  if (action) {
+    andConditions.push({ action });
+  }
+
+  if (targetType) {
+    andConditions.push({ targetType });
+  }
+
+  if (adminId) {
+    andConditions.push({ adminId });
+  }
+
+  if (startDate || endDate) {
+    andConditions.push({
+      createdAt: {
+        ...(startDate ? { gte: new Date(startDate) } : {}),
+        ...(endDate ? { lte: new Date(endDate) } : {}),
+      },
+    });
+  }
+
+  const whereConditions: Prisma.AdminAuditLogWhereInput =
+    andConditions.length > 0 ? { AND: andConditions } : {};
+
+  const [total, result] = await Promise.all([
+    prisma.adminAuditLog.count({ where: whereConditions }),
+    prisma.adminAuditLog.findMany({
+      where: whereConditions,
+      skip,
+      take: limit,
+      orderBy: sortBy && sortOrder ? { [sortBy]: sortOrder } : { createdAt: "desc" },
+      include: {
+        admin: {
+          select: {
+            id: true,
+            fullName: true,
+            phoneNumber: true,
+            email: true,
+            adminTier: true,
+          },
+        },
+      },
+    }),
+  ]);
+
+  return {
+    meta: { page, limit, total },
+    data: result,
+  };
+};
+
+// 4. Platform Booking Settings
+const getBookingSettings = async () => {
+  let settings = await prisma.platformBookingSetting.findFirst();
+  if (!settings) {
+    settings = await prisma.platformBookingSetting.create({
+      data: {
+        id: "default-platform-settings",
+        advanceBookingDays: 14,
+        cancellationCutoffHours: 12,
+        reminder24hEnabled: true,
+        reminder3hEnabled: true,
+        neglectedResolutionHours: 12,
+        autoRejectTimeoutMinutes: 30,
+      },
+    });
+  }
+  return settings;
+};
+
+const updateBookingSettings = async (payload: any, currentAdmin?: any) => {
+  const current = await getBookingSettings();
+  const updated = await prisma.platformBookingSetting.update({
+    where: { id: current.id },
+    data: {
+      advanceBookingDays: payload.advanceBookingDays !== undefined ? Number(payload.advanceBookingDays) : current.advanceBookingDays,
+      cancellationCutoffHours: payload.cancellationCutoffHours !== undefined ? Number(payload.cancellationCutoffHours) : current.cancellationCutoffHours,
+      reminder24hEnabled: payload.reminder24hEnabled !== undefined ? Boolean(payload.reminder24hEnabled) : current.reminder24hEnabled,
+      reminder3hEnabled: payload.reminder3hEnabled !== undefined ? Boolean(payload.reminder3hEnabled) : current.reminder3hEnabled,
+      neglectedResolutionHours: payload.neglectedResolutionHours !== undefined ? Number(payload.neglectedResolutionHours) : current.neglectedResolutionHours,
+      autoRejectTimeoutMinutes: payload.autoRejectTimeoutMinutes !== undefined ? Number(payload.autoRejectTimeoutMinutes) : current.autoRejectTimeoutMinutes,
+    },
+  });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "UPDATE_BOOKING_SETTINGS",
+    targetType: "SETTINGS",
+    targetId: updated.id,
+    details: { before: current, after: updated },
+  });
+
+  return updated;
+};
+
+// 5. Platform Financials & Wallet Ledger Overview
+const getPlatformFinancialOverview = async () => {
+  const [
+    totalUsers,
+    totalPatients,
+    totalDoctors,
+    totalClinics,
+    walletsSum,
+    patientFees,
+    adminTransactions,
+    settlementsGroup,
+  ] = await Promise.all([
+    prisma.user.count(),
+    prisma.user.count({ where: { role: UserRole.PATIENT } }),
+    prisma.user.count({ where: { role: UserRole.DOCTOR } }),
+    prisma.user.count({ where: { role: UserRole.CLINIC } }),
+    prisma.user.aggregate({
+      _sum: {
+        wallet: true,
+        frozenWallet: true,
+      },
+    }),
+    prisma.patientServiceFee.findMany(),
+    prisma.adminTransaction.aggregate({
+      _sum: {
+        patientServiceFee: true,
+        clinicServiceFee: true,
+        totalAmount: true,
+      },
+    }),
+    prisma.settlement.groupBy({
+      by: ["status"],
+      _sum: { amount: true },
+      _count: { id: true },
+    }),
+  ]);
+
+  return {
+    totalUsers,
+    totalPatients,
+    totalDoctors,
+    totalClinics,
+    wallets: {
+      totalActiveWallet: walletsSum._sum.wallet || 0,
+      totalFrozenWallet: walletsSum._sum.frozenWallet || 0,
+    },
+    capturedFees: {
+      patientServiceFee: adminTransactions._sum.patientServiceFee || 0,
+      clinicServiceFee: adminTransactions._sum.clinicServiceFee || 0,
+      totalAmount: adminTransactions._sum.totalAmount || 0,
+    },
+    countryPatientFees: patientFees,
+    settlementsSummary: settlementsGroup,
+  };
+};
+
+// 6. Settlements Management
+const getSettlements = async (filters: any, options: IPaginationOptions) => {
+  const { limit, page, skip, sortBy, sortOrder } = paginationHelpers.calculatePagination(options);
+  const { searchTerm, status, partyType, clinicId, doctorId } = filters;
+
+  const andConditions: Prisma.SettlementWhereInput[] = [];
+
+  if (searchTerm) {
+    andConditions.push({
+      OR: [
+        { settlementNumber: { contains: searchTerm, mode: "insensitive" } },
+        { reference: { contains: searchTerm, mode: "insensitive" } },
+        { notes: { contains: searchTerm, mode: "insensitive" } },
+        { clinic: { clinicName: { contains: searchTerm, mode: "insensitive" } } },
+      ],
+    });
+  }
+
+  if (status) {
+    andConditions.push({ status });
+  }
+
+  if (partyType) {
+    andConditions.push({ partyType });
+  }
+
+  if (clinicId) {
+    andConditions.push({ clinicId });
+  }
+
+  if (doctorId) {
+    andConditions.push({ doctorId });
+  }
+
+  const whereConditions: Prisma.SettlementWhereInput =
+    andConditions.length > 0 ? { AND: andConditions } : {};
+
+  const [total, result] = await Promise.all([
+    prisma.settlement.count({ where: whereConditions }),
+    prisma.settlement.findMany({
+      where: whereConditions,
+      skip,
+      take: limit,
+      orderBy: sortBy && sortOrder ? { [sortBy]: sortOrder } : { createdAt: "desc" },
+      include: {
+        clinic: {
+          select: {
+            id: true,
+            clinicName: true,
+            logo: true,
+            contactPhone: true,
+            user: {
+              select: {
+                id: true,
+                fullName: true,
+                phoneNumber: true,
+                wallet: true,
+              },
+            },
+          },
+        },
+        doctor: {
+          select: {
+            id: true,
+            user: {
+              select: {
+                id: true,
+                fullName: true,
+                phoneNumber: true,
+                wallet: true,
+              },
+            },
+          },
+        },
+        processedBy: {
+          select: {
+            id: true,
+            fullName: true,
+            phoneNumber: true,
+            adminTier: true,
+          },
+        },
+      },
+    }),
+  ]);
+
+  return {
+    meta: { page, limit, total },
+    data: result,
+  };
+};
+
+const createSettlement = async (payload: any, currentParty?: any) => {
+  const { partyType, clinicId, doctorId, amount, notes } = payload;
+
+  if (!amount || Number(amount) <= 0) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Valid settlement amount is required");
+  }
+
+  const settlementNumber = `SET-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+  const newSettlement = await prisma.settlement.create({
+    data: {
+      settlementNumber,
+      partyType: partyType || (clinicId ? "CLINIC" : "DOCTOR"),
+      clinicId: clinicId || null,
+      doctorId: doctorId || null,
+      amount: Number(amount),
+      status: "PENDING",
+      notes: notes || null,
+    },
+    include: {
+      clinic: true,
+      doctor: true,
+    },
+  });
+
+  return newSettlement;
+};
+
+const updateSettlementStatus = async (settlementId: string, payload: any, currentAdmin?: any) => {
+  const { status, reference, receiptUrl, notes } = payload;
+
+  const settlement = await prisma.settlement.findUnique({
+    where: { id: settlementId },
+    include: { clinic: { include: { user: true } } },
+  });
+
+  if (!settlement) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Settlement record not found");
+  }
+
+  const updateData: any = {
+    status,
+    notes: notes !== undefined ? notes : settlement.notes,
+    reference: reference !== undefined ? reference : settlement.reference,
+    receiptUrl: receiptUrl !== undefined ? receiptUrl : settlement.receiptUrl,
+    processedByAdminId: currentAdmin?.id,
+  };
+
+  if (status === "APPROVED" && !settlement.processedAt) {
+    updateData.processedAt = new Date();
+  }
+
+  if (status === "COMPLETED") {
+    updateData.completedAt = new Date();
+    if (!settlement.processedAt) {
+      updateData.processedAt = new Date();
+    }
+  }
+
+  const result = await prisma.settlement.update({
+    where: { id: settlementId },
+    data: updateData,
+    include: {
+      clinic: true,
+      doctor: true,
+      processedBy: true,
+    },
+  });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: `SETTLEMENT_${status}`,
+    targetType: "SETTLEMENT",
+    targetId: settlementId,
+    details: {
+      settlementNumber: settlement.settlementNumber,
+      amount: settlement.amount,
+      oldStatus: settlement.status,
+      newStatus: status,
+      reference,
+    },
+  });
+
+  return result;
+};
+
+// 7. Complaints & Dispute Handling
+const getComplaints = async (filters: any, options: IPaginationOptions) => {
+  const { limit, page, skip, sortBy, sortOrder } = paginationHelpers.calculatePagination(options);
+  const { searchTerm, status, targetType } = filters;
+
+  const andConditions: Prisma.ComplaintWhereInput[] = [];
+
+  if (searchTerm) {
+    andConditions.push({
+      OR: [
+        { complaintNumber: { contains: searchTerm, mode: "insensitive" } },
+        { subject: { contains: searchTerm, mode: "insensitive" } },
+        { description: { contains: searchTerm, mode: "insensitive" } },
+        { complainant: { fullName: { contains: searchTerm, mode: "insensitive" } } },
+      ],
+    });
+  }
+
+  if (status) {
+    andConditions.push({ status });
+  }
+
+  if (targetType) {
+    andConditions.push({ targetType });
+  }
+
+  const whereConditions: Prisma.ComplaintWhereInput =
+    andConditions.length > 0 ? { AND: andConditions } : {};
+
+  const [total, result] = await Promise.all([
+    prisma.complaint.count({ where: whereConditions }),
+    prisma.complaint.findMany({
+      where: whereConditions,
+      skip,
+      take: limit,
+      orderBy: sortBy && sortOrder ? { [sortBy]: sortOrder } : { createdAt: "desc" },
+      include: {
+        complainant: {
+          select: {
+            id: true,
+            fullName: true,
+            phoneNumber: true,
+            role: true,
+            email: true,
+          },
+        },
+        resolvedBy: {
+          select: {
+            id: true,
+            fullName: true,
+            adminTier: true,
+          },
+        },
+        booking: {
+          select: {
+            id: true,
+            serialNumber: true,
+            consultDate: true,
+            status: true,
+          },
+        },
+      },
+    }),
+  ]);
+
+  return {
+    meta: { page, limit, total },
+    data: result,
+  };
+};
+
+const getComplaintById = async (complaintId: string) => {
+  const result = await prisma.complaint.findUnique({
+    where: { id: complaintId },
+    include: {
+      complainant: {
+        select: {
+          id: true,
+          fullName: true,
+          phoneNumber: true,
+          role: true,
+          email: true,
+        },
+      },
+      resolvedBy: {
+        select: {
+          id: true,
+          fullName: true,
+          adminTier: true,
+        },
+      },
+      booking: true,
+    },
+  });
+
+  if (!result) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Complaint not found");
+  }
+
+  return result;
+};
+
+const createComplaint = async (payload: any, currentUser: any) => {
+  const { targetType, targetId, bookingId, subject, description } = payload;
+
+  if (!subject || !description) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Subject and description are required");
+  }
+
+  const complaintNumber = `CMP-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+  const result = await prisma.complaint.create({
+    data: {
+      complaintNumber,
+      complainantId: currentUser.id,
+      complainantRole: currentUser.role,
+      targetType: targetType || "SYSTEM",
+      targetId: targetId || null,
+      bookingId: bookingId || null,
+      subject,
+      description,
+      status: "PENDING",
+    },
+    include: {
+      complainant: true,
+    },
+  });
+
+  return result;
+};
+
+const resolveComplaint = async (complaintId: string, payload: any, currentAdmin?: any) => {
+  const { status, adminNotes, resolution } = payload;
+
+  const complaint = await prisma.complaint.findUnique({
+    where: { id: complaintId },
+  });
+
+  if (!complaint) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Complaint not found");
+  }
+
+  const updateData: any = {
+    status: status || "RESOLVED",
+    adminNotes: adminNotes !== undefined ? adminNotes : complaint.adminNotes,
+    resolution: resolution !== undefined ? resolution : complaint.resolution,
+    resolvedByAdminId: currentAdmin?.id,
+    resolvedAt: new Date(),
+  };
+
+  const result = await prisma.complaint.update({
+    where: { id: complaintId },
+    data: updateData,
+    include: {
+      complainant: true,
+      resolvedBy: true,
+    },
+  });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: `COMPLAINT_${status || "RESOLVED"}`,
+    targetType: "COMPLAINT",
+    targetId: complaintId,
+    details: {
+      complaintNumber: complaint.complaintNumber,
+      subject: complaint.subject,
+      resolution,
+      adminNotes,
+    },
+  });
+
+  return result;
+};
+
 export const AdminService = {
   getDoctors,
   getPatients,
   getClinics,
   AdminClinicVerified,
+  updateClinicVisibility,
   AdminStats,
   bannedUser,
   suspendUserWithRefund,
@@ -949,4 +1728,20 @@ export const AdminService = {
   createPatientNotification,
   createClinicNotification,
   overrideAppointmentStatus,
+  // Section 9 new methods:
+  getAdminStaff,
+  createAdminStaff,
+  updateAdminStaffTier,
+  toggleAdminStaffStatus,
+  getAuditLogs,
+  getBookingSettings,
+  updateBookingSettings,
+  getPlatformFinancialOverview,
+  getSettlements,
+  createSettlement,
+  updateSettlementStatus,
+  getComplaints,
+  getComplaintById,
+  createComplaint,
+  resolveComplaint,
 };

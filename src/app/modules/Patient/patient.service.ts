@@ -431,6 +431,7 @@ const getNearestClinics = async (
       clinic: {
         is: {
           adminVerified: true,
+          isVisible: true,
         },
       },
     },

@@ -16,6 +16,14 @@ enum UserRole {
   MANAGER
 }
 
+enum AdminTier {
+  SUPER_ADMIN
+  OPERATIONS
+  FINANCE
+  SUPPORT
+  READ_ONLY
+}
+
 enum UserStatus {
   ACTIVE
   SUSPENDED
@@ -76,6 +84,7 @@ model User {
   otpExpiresAt DateTime?
   status       UserStatus @default(ACTIVE)
   role         UserRole?
+  adminTier    AdminTier? @default(SUPER_ADMIN)
 
   // Common profile fields
   fullName         String?
@@ -128,6 +137,10 @@ model User {
   patientAdminTransactions            AdminTransaction[]                    @relation("patient")
   clinicAdminTransactions             AdminTransaction[]                    @relation("clinic")
   agreementAcceptances                UserAgreementAcceptance[]
+  adminAuditLogs                      AdminAuditLog[]                       @relation("AdminAuditLogs")
+  processedSettlements                Settlement[]                          @relation("AdminProcessedSettlements")
+  complaintsFiled                     Complaint[]                           @relation("ComplainantUser")
+  resolvedComplaints                  Complaint[]                           @relation("AdminResolvedComplaints")
 
   accessToken  String?
   refreshToken String?
@@ -196,6 +209,7 @@ model Doctor {
   doctorNotifications DoctorNotification[]
   doctorClinics       DoctorClinic[]
   joinRequests        DoctorClinicRequest[]
+  settlements         Settlement[]
 
   @@index([clinicId])
   @@map("doctors")
@@ -284,6 +298,7 @@ model Clinic {
   collectionMode        String  @default("MODE_A")
   advanceBookingDays    Int     @default(14)
   serviceFeePercentage  Float   @default(10.0)
+  isVisible             Boolean @default(true)
 
   specialists         ClinicSpecialist[]
   insurances          ClinicInsurance[]
@@ -295,6 +310,7 @@ model Clinic {
   bookingsAsClinic    BookingAppointment[]  @relation("ClinicBooking")
   manager             Manager[]
   clinicNotifications ClinicNotification[]
+  settlements         Settlement[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -509,6 +525,7 @@ model BookingAppointment {
   topUps               TopUp[]
   adminTransactions    AdminTransaction[]
   patientNotifications PatientNotification[]
+  complaints           Complaint[]
 
   @@index([clinicId])
   @@index([doctorId])
@@ -908,4 +925,98 @@ model NotificationTemplate {
 
   @@index([eventKey])
   @@map("notification_templates")
+}
+
+model AdminAuditLog {
+  id         String     @id @default(cuid())
+  adminId    String
+  adminName  String?
+  adminTier  AdminTier?
+  action     String
+  targetType String
+  targetId   String?
+  details    Json?
+  ipAddress  String?
+  createdAt  DateTime   @default(now())
+
+  admin      User       @relation("AdminAuditLogs", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId])
+  @@index([action])
+  @@index([targetType])
+  @@index([createdAt])
+  @@map("admin_audit_logs")
+}
+
+model Settlement {
+  id                  String    @id @default(cuid())
+  settlementNumber    String    @unique
+  partyType           String    // "CLINIC" or "DOCTOR"
+  clinicId            String?
+  doctorId            String?
+  amount              Float
+  status              String    @default("PENDING") // PENDING, UNDER_REVIEW, APPROVED, REJECTED, COMPLETED
+  reference           String?
+  receiptUrl          String?
+  notes               String?
+  requestedAt         DateTime  @default(now())
+  processedAt         DateTime?
+  completedAt         DateTime?
+  processedByAdminId  String?
+
+  clinic              Clinic?   @relation(fields: [clinicId], references: [id], onDelete: SetNull)
+  doctor              Doctor?   @relation(fields: [doctorId], references: [id], onDelete: SetNull)
+  processedBy         User?     @relation("AdminProcessedSettlements", fields: [processedByAdminId], references: [id], onDelete: SetNull)
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([partyType])
+  @@index([status])
+  @@index([clinicId])
+  @@index([doctorId])
+  @@map("settlements")
+}
+
+model Complaint {
+  id                 String              @id @default(cuid())
+  complaintNumber    String              @unique
+  complainantId      String
+  complainantRole    UserRole
+  targetType         String              // "DOCTOR", "CLINIC", "PATIENT", "BOOKING", "SYSTEM"
+  targetId           String?
+  bookingId          String?
+  subject            String
+  description        String              @db.Text
+  status             String              @default("PENDING") // PENDING, UNDER_INVESTIGATION, RESOLVED, DISMISSED
+  adminNotes         String?             @db.Text
+  resolution         String?             @db.Text
+  resolvedByAdminId  String?
+  resolvedAt         DateTime?
+
+  complainant        User                @relation("ComplainantUser", fields: [complainantId], references: [id], onDelete: Cascade)
+  resolvedBy         User?               @relation("AdminResolvedComplaints", fields: [resolvedByAdminId], references: [id], onDelete: SetNull)
+  booking            BookingAppointment? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@index([complainantId])
+  @@index([status])
+  @@index([targetType])
+  @@map("complaints")
+}
+
+model PlatformBookingSetting {
+  id                       String   @id @default(cuid())
+  advanceBookingDays       Int      @default(14)
+  cancellationCutoffHours  Int      @default(12)
+  reminder24hEnabled       Boolean  @default(true)
+  reminder3hEnabled        Boolean  @default(true)
+  neglectedResolutionHours Int      @default(12)
+  autoRejectTimeoutMinutes Int      @default(30)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@map("platform_booking_settings")
 }
