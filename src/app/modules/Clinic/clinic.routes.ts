@@ -121,6 +121,19 @@ router.patch(
   ClinicController.managerUpdateAppointmentStatus
 );
 
+router.get(
+  "/doctor-absence/caseload",
+  auth(UserRole.CLINIC, UserRole.MANAGER),
+  ClinicController.getDoctorAbsenceCaseload
+);
+
+router.post(
+  "/doctor-absence/execute",
+  auth(UserRole.CLINIC, UserRole.MANAGER),
+  validateRequest(clinicValidation.executeDoctorAbsenceValidationSchema),
+  ClinicController.executeDoctorAbsence
+);
+
 router.patch(
   "/remove-clinic-doctor/:doctorId",
   auth(),

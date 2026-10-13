@@ -1972,6 +1972,287 @@ const respondJoinRequest = async (
   return updatedRequest;
 };
 
+// Section 5: Doctor Absence Caseload Preview
+const getDoctorAbsenceCaseload = async (
+  userId: string,
+  userRole: string,
+  doctorId: string,
+  date: string
+) => {
+  let clinicId: string;
+  if (userRole === UserRole.CLINIC) {
+    const clinic = await prisma.clinic.findUnique({ where: { userId } });
+    if (!clinic) throw new ApiError(httpStatus.NOT_FOUND, "Clinic profile not found");
+    clinicId = clinic.id;
+  } else if (userRole === UserRole.MANAGER) {
+    const manager = await prisma.manager.findFirst({
+      where: { userId },
+      include: { clinic: true },
+    });
+    if (!manager || !manager.clinic) {
+      throw new ApiError(httpStatus.NOT_FOUND, "Manager or clinic not found");
+    }
+    clinicId = manager.clinic.id;
+  } else {
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      "Forbidden: Only clinics and managers can access doctor caseload"
+    );
+  }
+
+  const doctor = await prisma.doctor.findUnique({
+    where: { id: doctorId },
+    include: {
+      user: {
+        select: {
+          id: true,
+          fullName: true,
+          phoneNumber: true,
+          email: true,
+          profileImage: true,
+        },
+      },
+    },
+  });
+
+  if (!doctor) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
+  }
+
+  const searchDate = new Date(date);
+  if (isNaN(searchDate.getTime())) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "Invalid date format. Expected YYYY-MM-DD"
+    );
+  }
+  const startOfDay = new Date(searchDate);
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const endOfDay = new Date(searchDate);
+  endOfDay.setUTCHours(23, 59, 59, 999);
+
+  const affectedBookings = await prisma.bookingAppointment.findMany({
+    where: {
+      clinicId,
+      doctorId,
+      consultDate: {
+        gte: startOfDay,
+        lte: endOfDay,
+      },
+      status: {
+        in: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+      },
+    },
+    orderBy: [
+      { startTime: "asc" },
+      { serialNumber: "asc" },
+    ],
+    include: {
+      patient: {
+        include: {
+          user: {
+            select: {
+              id: true,
+              fullName: true,
+              phoneNumber: true,
+              email: true,
+              profileImage: true,
+            },
+          },
+        },
+      },
+      workingSlot: true,
+    },
+  });
+
+  const pendingCount = affectedBookings.filter(
+    (b) => b.status === BookingStatus.PENDING
+  ).length;
+  const confirmedCount = affectedBookings.filter(
+    (b) => b.status === BookingStatus.CONFIRMED
+  ).length;
+
+  return {
+    doctor: {
+      id: doctor.id,
+      name: doctor.user?.fullName,
+      speciality: doctor.speciality,
+    },
+    date,
+    summary: {
+      totalAffected: affectedBookings.length,
+      pendingCount,
+      confirmedCount,
+    },
+    caseload: affectedBookings,
+  };
+};
+
+// Section 5: Doctor Absence One-Action Execution
+const executeDoctorAbsence = async (
+  userId: string,
+  userRole: string,
+  payload: {
+    doctorId: string;
+    date: string;
+    reason?: string;
+  }
+) => {
+  const { doctorId, date, reason } = payload;
+
+  let clinicId: string;
+  let clinicUserId: string;
+  if (userRole === UserRole.CLINIC) {
+    const clinic = await prisma.clinic.findUnique({ where: { userId } });
+    if (!clinic) throw new ApiError(httpStatus.NOT_FOUND, "Clinic profile not found");
+    clinicId = clinic.id;
+    clinicUserId = clinic.userId;
+  } else if (userRole === UserRole.MANAGER) {
+    const manager = await prisma.manager.findFirst({
+      where: { userId },
+      include: { clinic: true },
+    });
+    if (!manager || !manager.clinic) {
+      throw new ApiError(httpStatus.NOT_FOUND, "Manager or clinic not found");
+    }
+    clinicId = manager.clinic.id;
+    clinicUserId = manager.clinic.userId;
+  } else {
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      "Forbidden: Only clinics and managers can execute doctor absence"
+    );
+  }
+
+  const doctor = await prisma.doctor.findUnique({
+    where: { id: doctorId },
+    include: {
+      user: {
+        select: {
+          fullName: true,
+        },
+      },
+    },
+  });
+
+  if (!doctor) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
+  }
+
+  const searchDate = new Date(date);
+  if (isNaN(searchDate.getTime())) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "Invalid date format. Expected YYYY-MM-DD"
+    );
+  }
+  const startOfDay = new Date(searchDate);
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const endOfDay = new Date(searchDate);
+  endOfDay.setUTCHours(23, 59, 59, 999);
+
+  const affectedBookings = await prisma.bookingAppointment.findMany({
+    where: {
+      clinicId,
+      doctorId,
+      consultDate: {
+        gte: startOfDay,
+        lte: endOfDay,
+      },
+      status: {
+        in: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+      },
+    },
+    orderBy: [
+      { startTime: "asc" },
+      { serialNumber: "asc" },
+    ],
+    include: {
+      patient: {
+        include: {
+          user: true,
+        },
+      },
+    },
+  });
+
+  const doctorName = doctor.user?.fullName || "Doctor";
+  const absenceReason =
+    reason?.trim() || `Doctor ${doctorName} is absent on ${date}`;
+
+  let pendingRejected = 0;
+  let confirmedCancelled = 0;
+  const processedBookings: Array<{
+    appointmentId: string;
+    serialNumber: number;
+    patientName: string;
+    previousStatus: BookingStatus;
+    newStatus: BookingStatus;
+    success: boolean;
+    error?: string;
+  }> = [];
+
+  for (const booking of affectedBookings) {
+    try {
+      if (booking.status === BookingStatus.PENDING) {
+        await BookingService.rejectBooking(booking.id, absenceReason, "CLINIC");
+        pendingRejected++;
+        processedBookings.push({
+          appointmentId: booking.id,
+          serialNumber: booking.serialNumber,
+          patientName: booking.patient?.user?.fullName || "Patient",
+          previousStatus: BookingStatus.PENDING,
+          newStatus: BookingStatus.REJECTED,
+          success: true,
+        });
+      } else if (booking.status === BookingStatus.CONFIRMED) {
+        await BookingService.cancelBooking(
+          booking.id,
+          clinicUserId,
+          "CLINIC",
+          absenceReason
+        );
+        confirmedCancelled++;
+        processedBookings.push({
+          appointmentId: booking.id,
+          serialNumber: booking.serialNumber,
+          patientName: booking.patient?.user?.fullName || "Patient",
+          previousStatus: BookingStatus.CONFIRMED,
+          newStatus: BookingStatus.CANCELLED,
+          success: true,
+        });
+      }
+    } catch (err: any) {
+      console.error(
+        `Failed to process booking ${booking.id} during doctor absence:`,
+        err
+      );
+      processedBookings.push({
+        appointmentId: booking.id,
+        serialNumber: booking.serialNumber,
+        patientName: booking.patient?.user?.fullName || "Patient",
+        previousStatus: booking.status,
+        newStatus: booking.status,
+        success: false,
+        error: err.message,
+      });
+    }
+  }
+
+  return {
+    doctor: {
+      id: doctor.id,
+      name: doctorName,
+    },
+    date,
+    reason: absenceReason,
+    totalAffected: affectedBookings.length,
+    pendingRejected,
+    confirmedCancelled,
+    processedBookings,
+  };
+};
+
 export const ClinicService = {
   updateClinicProfile,
   getClinicProfile,
@@ -2000,4 +2281,6 @@ export const ClinicService = {
   getManagerBookingHistory,
   getClinicJoinRequests,
   respondJoinRequest,
+  getDoctorAbsenceCaseload,
+  executeDoctorAbsence,
 };

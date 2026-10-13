@@ -170,10 +170,15 @@ export const appointmentLifecycleWorker = new Worker<
         });
         const clinicPenalty = clinicUser?.serviceFree || 0;
 
-        // 2. Update status to NOT_UPDATED
+        // 2. Update status to REJECTED (Section 4/5: silence by deadline triggers auto-reject)
         await tx.bookingAppointment.update({
           where: { id: appointmentId },
-          data: { status: BookingStatus.NOT_UPDATED },
+          data: {
+            status: BookingStatus.REJECTED,
+            rejectionReason: 'Auto-rejected: Clinic silence by deadline',
+            cancellationReason: 'Auto-rejected: Clinic silence by deadline',
+            cancelledBy: 'CLINIC',
+          },
         });
 
         // 3. Unfreeze patient hold or refund patientServiceFee back to the patient
@@ -263,11 +268,11 @@ export const appointmentLifecycleWorker = new Worker<
           data: {
             patientId,
             bookingAppointmentId: appointmentId,
-            notificationType: 'APPOINTMENT_NOT_UPDATED',
-            title: 'Booking Not Confirmed',
+            notificationType: 'APPOINTMENT_REJECTED',
+            title: 'Booking Auto-Rejected',
             description:
-              'Your appointment request was not accepted by the clinic before the appointment time. ' +
-              'Your service fee has been refunded.',
+              'Your appointment request was not accepted by the clinic before the deadline. ' +
+              'Your service fee hold has been unreleased / refunded in full.',
           },
         });
 
@@ -281,9 +286,9 @@ export const appointmentLifecycleWorker = new Worker<
             data: {
               clinicId: clinic.id,
               bookingAppointmentId: appointmentId,
-              notificationType: 'APPOINTMENT_NOT_UPDATED',
+              notificationType: 'APPOINTMENT_REJECTED',
               title: 'Booking Ignored Penalty',
-              description: `You missed a booking request before the appointment time. A penalty of ${clinicPenalty} has been deducted from your wallet.`,
+              description: `You missed a booking request before the deadline. A penalty of ${clinicPenalty} has been deducted from your wallet.`,
             },
           });
         }
@@ -332,8 +337,11 @@ export const appointmentLifecycleWorker = new Worker<
       // 🌍 Section 5 Auto-Settle Rule:
       // "An unresolved confirmed appointment auto-settles 12 hours after period end:
       // Completed if Arrived was ever recorded, otherwise Neglected (service fee stays with the platform, consultation amount refunded)."
-      if (appointment.status === BookingStatus.ARRIVED) {
-        console.log(`✅ [CONFIRMED_TIMEOUT] Appointment ${appointmentId} was ARRIVED → Auto-Completing.`);
+      if (
+        appointment.status === BookingStatus.ARRIVED ||
+        appointment.status === BookingStatus.INPROGRESS
+      ) {
+        console.log(`✅ [CONFIRMED_TIMEOUT] Appointment ${appointmentId} was ${appointment.status} → Auto-Completing.`);
         await BookingService.completeBooking(appointmentId);
         return { status: 'success', outcome: 'AUTO_COMPLETED', appointmentId };
       }

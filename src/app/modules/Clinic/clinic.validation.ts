@@ -42,10 +42,17 @@ const updateBookingStatusValidationSchema = z.object({
   reason: z.string().optional(),
 });
 
+const executeDoctorAbsenceValidationSchema = z.object({
+  doctorId: z.string({ required_error: "Doctor ID is required" }),
+  date: z.string({ required_error: "Date is required (YYYY-MM-DD)" }),
+  reason: z.string().optional(),
+});
+
 export const clinicValidation = {
   updateClinicProfileValidationSchema,
   createClinicSpecialistValidationSchema,
   createClinicInsuranceValidationSchema,
   createPhotoGalleryValidationSchema,
   updateBookingStatusValidationSchema,
+  executeDoctorAbsenceValidationSchema,
 };

@@ -4,6 +4,8 @@ import { paginationFields } from "../../../constants/pagination";
 import catchAsync from "../../../shared/catchAsync";
 import pick from "../../../shared/pick";
 import sendResponse from "../../../shared/sendResponse";
+import ApiError from "../../../errors/ApiErrors";
+import { BookingStatus } from "@prisma/client";
 import { AdminService } from "./admin.service";
 
 const AdminStats = catchAsync(async (req: Request, res: Response) => {
@@ -204,6 +206,31 @@ const suspendClinic = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const overrideAppointmentStatus = catchAsync(async (req: Request, res: Response) => {
+  const { appointmentId } = req.params;
+  const { status, reason } = req.body;
+
+  if (!status || !Object.values(BookingStatus).includes(status)) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      `Valid status is required. Allowed values: ${Object.values(BookingStatus).join(", ")}`
+    );
+  }
+
+  const result = await AdminService.overrideAppointmentStatus(
+    appointmentId,
+    status,
+    reason
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Appointment status overridden successfully by admin",
+    data: result,
+  });
+});
+
 export const AdminController = {
   getDoctors,
   getPatients,
@@ -218,5 +245,6 @@ export const AdminController = {
   SetServiceFree,
   updateWallet,
   patientNotification,
-  clinicNotification
+  clinicNotification,
+  overrideAppointmentStatus,
 };

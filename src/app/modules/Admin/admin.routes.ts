@@ -89,5 +89,10 @@ router.post(
   AdminController.clinicNotification
 );
 
+router.patch(
+  "/appointments/:appointmentId/override-status",
+  auth(UserRole.ADMIN),
+  AdminController.overrideAppointmentStatus
+);
 
 export const AdminRoutes = router;

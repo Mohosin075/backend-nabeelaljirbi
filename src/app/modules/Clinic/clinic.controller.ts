@@ -490,6 +490,67 @@ const respondJoinRequest = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const getDoctorAbsenceCaseload = catchAsync(
+  async (req: Request, res: Response) => {
+    const userId = req.user.id;
+    const userRole = req.user.role;
+    const { doctorId, date } = req.query;
+
+    if (!doctorId || !date) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        "doctorId and date query parameters are required"
+      );
+    }
+
+    const result = await ClinicService.getDoctorAbsenceCaseload(
+      userId,
+      userRole,
+      doctorId as string,
+      date as string
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Doctor absence caseload retrieved successfully",
+      data: result,
+    });
+  }
+);
+
+const executeDoctorAbsence = catchAsync(
+  async (req: Request, res: Response) => {
+    const userId = req.user.id;
+    const userRole = req.user.role;
+    const { doctorId, date, reason } = req.body;
+
+    if (!doctorId || !date) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        "doctorId and date are required in request body"
+      );
+    }
+
+    const result = await ClinicService.executeDoctorAbsence(
+      userId,
+      userRole,
+      {
+        doctorId,
+        date,
+        reason,
+      }
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Doctor absence processed successfully",
+      data: result,
+    });
+  }
+);
+
 export const ClinicController = {
   updateClinicProfile,
   getClinicProfile,
@@ -517,4 +578,6 @@ export const ClinicController = {
   getManagerBookingHistory,
   getClinicJoinRequests,
   respondJoinRequest,
+  getDoctorAbsenceCaseload,
+  executeDoctorAbsence,
 };

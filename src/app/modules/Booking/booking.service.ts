@@ -646,6 +646,7 @@ const rejectBooking = async (
     });
 
     // Notify patient
+    const reasonText = reason || "Clinic rejected booking request";
     await tx.patientNotification.create({
       data: {
         patientId: appointment.patientId,
@@ -654,7 +655,7 @@ const rejectBooking = async (
         title: "Booking Request Rejected",
         description: `Your appointment request for ${new Date(
           appointment.consultDate
-        ).toLocaleDateString()} was not accepted. Any frozen amount of ${holdAmount} LYD has been completely released back to your wallet.`,
+        ).toLocaleDateString()} was not accepted. Reason: ${reasonText}. Any frozen amount of ${holdAmount} LYD has been completely released back to your wallet.`,
       },
     });
 
@@ -935,6 +936,7 @@ const cancelBooking = async (
           ? `The consultation amount of ${refundToPatient} LYD has been refunded to your wallet. The service fee is non-refundable.`
           : `Please note the service fee is non-refundable once an appointment is confirmed.`;
 
+      const cancelReasonText = reason || `Cancelled by ${cancelledBy.toLowerCase()}`;
       await tx.patientNotification.create({
         data: {
           patientId: booking.patientId,
@@ -945,7 +947,7 @@ const cancelBooking = async (
             booking.doctor?.user?.fullName || "Doctor"
           } on ${new Date(
             booking.consultDate
-          ).toLocaleDateString()} has been cancelled. ${refundMsg}`,
+          ).toLocaleDateString()} has been cancelled. Reason: ${cancelReasonText}. ${refundMsg}`,
         },
       });
 

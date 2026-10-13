@@ -7,6 +7,7 @@ import httpStatus from "http-status";
 import { Notification } from "../Notification/notification.service";
 import { adminNotificationQueue } from "../../jobs";
 import { BookingSchedulerService } from "../../jobs/services/bookingScheduler.service";
+import { broadcastBookingUpdate } from "../../../helpars/socket/socketHandler";
 
 
 
@@ -922,6 +923,96 @@ const createClinicNotification = async (payload: { userId: string[], title: stri
   return { success: true, message: `Queued ${userId.length} notifications to be sent.` };
 };
 
+// Section 5: Admin Manual Override
+const overrideAppointmentStatus = async (
+  appointmentId: string,
+  newStatus: BookingStatus,
+  reason?: string
+) => {
+  const appointment = await prisma.bookingAppointment.findUnique({
+    where: { id: appointmentId },
+    include: {
+      patient: { select: { id: true, userId: true, user: true } },
+      clinic: { select: { id: true, userId: true, user: true } },
+      doctor: { select: { id: true, userId: true, user: true } },
+    },
+  });
+
+  if (!appointment) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Appointment not found");
+  }
+
+  const reasonText = reason?.trim() || `Admin manual override to ${newStatus}`;
+
+  const updateData: Prisma.BookingAppointmentUpdateInput = {
+    status: newStatus,
+  };
+
+  if (newStatus === BookingStatus.CANCELLED) {
+    updateData.cancelledBy = "ADMIN";
+    updateData.cancellationReason = reasonText;
+  } else if (newStatus === BookingStatus.REJECTED) {
+    updateData.rejectionReason = reasonText;
+  } else if (newStatus === BookingStatus.NOT_SHOW) {
+    updateData.cancellationReason = reasonText;
+    (updateData as any).noShowReason = reasonText;
+  }
+
+  const result = await prisma.bookingAppointment.update({
+    where: { id: appointmentId },
+    data: updateData,
+  });
+
+  // If moving to a terminal state, cancel scheduled notifications/timeouts
+  const terminalStatuses: BookingStatus[] = [
+    BookingStatus.COMPLETE,
+    BookingStatus.CANCELLED,
+    BookingStatus.REJECTED,
+    BookingStatus.NOT_SHOW,
+  ];
+  if (terminalStatuses.includes(newStatus)) {
+    try {
+      await BookingSchedulerService.cancelBookingNotifications(appointmentId);
+      await BookingSchedulerService.cancelConfirmedBookingTimeout(appointmentId);
+    } catch (e) {
+      // non-blocking
+    }
+  }
+
+  // Notify patient
+  if (appointment.patient?.user?.fcmToken) {
+    await Notification.PatientNotification(
+      result.id,
+      result.patientId,
+      `APPOINTMENT_${newStatus}`,
+      "Appointment Status Updated by Admin",
+      `Your appointment status has been updated to ${newStatus}. Note: ${reasonText}`,
+      appointment.patient.user.fcmToken
+    );
+  }
+
+  // Real-time synchronization
+  try {
+    broadcastBookingUpdate({
+      bookingId: result.id,
+      status: result.status,
+      clinicId: appointment.clinicId,
+      doctorId: appointment.doctorId,
+      patientId: appointment.patientId,
+      patientUserId: appointment.patient?.userId,
+      clinicUserId: appointment.clinic?.userId,
+      doctorUserId: appointment.doctor?.userId,
+      reason: reasonText,
+      serialNumber: appointment.serialNumber,
+      consultDate: appointment.consultDate,
+    });
+  } catch (err) {
+    console.error("WS broadcast error:", err);
+  }
+
+  return result;
+};
+
 export const AdminService = {
   getDoctors,
   getPatients,
@@ -937,5 +1028,6 @@ export const AdminService = {
   SetServiceFree,
   updateWallet,
   createPatientNotification,
-  createClinicNotification
+  createClinicNotification,
+  overrideAppointmentStatus,
 };
