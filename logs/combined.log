@@ -3882,3 +3882,11 @@
 {"level":"info","message":"Incoming request: GET /api/v1/admin/booking-settings","service":"default-service-name","timestamp":"2026-10-13 16:25:38"}
 {"level":"info","message":"Incoming request: PATCH /api/v1/admin/booking-settings","service":"default-service-name","timestamp":"2026-10-13 16:25:47"}
 {"level":"info","message":"Incoming request: PATCH /api/v1/admin/booking-settings","service":"default-service-name","timestamp":"2026-10-13 16:25:56"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/audit-logs?page=1&limit=15","service":"default-service-name","timestamp":"2026-10-13 16:55:34"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/audit-logs?page=1&limit=15","service":"default-service-name","timestamp":"2026-10-13 16:55:34"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/staff?page=1&limit=10","service":"default-service-name","timestamp":"2026-10-13 17:01:53"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/staff?page=1&limit=10","service":"default-service-name","timestamp":"2026-10-13 17:01:53"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/staff?page=1&limit=10&adminTier=SUPPORT","service":"default-service-name","timestamp":"2026-10-13 17:02:01"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/staff?page=1&limit=10&adminTier=FINANCE","service":"default-service-name","timestamp":"2026-10-13 17:02:01"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/staff?page=1&limit=10&adminTier=OPERATIONS","service":"default-service-name","timestamp":"2026-10-13 17:02:02"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/staff?page=1&limit=10&adminTier=SUPER_ADMIN","service":"default-service-name","timestamp":"2026-10-13 17:02:02"}
