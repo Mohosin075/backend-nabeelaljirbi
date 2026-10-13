@@ -40,28 +40,42 @@ export const generateTokens = (user: User, role?: string) => {
 
 type OTPChannel = "sms" | "whatsapp";
 
-const resolveOTPChannel = (OTPSender?: string): OTPChannel => {
-  if (!OTPSender) {
-    return "sms";
+// Resolve primary OTP channel prioritizing WhatsApp
+const resolvePrimaryOTPChannel = async (
+  requestedSender?: string
+): Promise<{ primary: OTPChannel; fallback?: OTPChannel }> => {
+  const otpSettings = await prisma.oTPSystem.findFirst();
+  const isWhatsappEnabled = otpSettings ? otpSettings.WhatsApp : true;
+  const isSmsEnabled = otpSettings ? otpSettings.SMS : false; // Off by default
+
+  const normalized = requestedSender?.toLowerCase().replace(/[\s_-]/g, "");
+
+  if (normalized === "sms") {
+    if (!isSmsEnabled && isWhatsappEnabled) {
+      // SMS is disabled in settings, route to WhatsApp
+      return { primary: "whatsapp" };
+    }
+    return {
+      primary: "sms",
+      fallback: isWhatsappEnabled ? "whatsapp" : undefined,
+    };
   }
 
-  const normalizedSender = OTPSender.toLowerCase().replace(/[\s_-]/g, "");
-
-  if (normalizedSender === "whatsapp") {
-    return "whatsapp";
+  // Default: WhatsApp is prioritized, SMS is fallback if enabled
+  if (isWhatsappEnabled) {
+    return {
+      primary: "whatsapp",
+      fallback: isSmsEnabled ? "sms" : undefined,
+    };
+  } else if (isSmsEnabled) {
+    return { primary: "sms" };
   }
 
-  if (normalizedSender === "sms") {
-    return "sms";
-  }
-
-  throw new ApiError(
-    httpStatus.BAD_REQUEST,
-    "Invalid OTP sender. Use sms or whatsapp",
-  );
+  // Default fallback if both flags are somehow false
+  return { primary: "whatsapp", fallback: "sms" };
 };
 
-// Send OTP to phone number
+// Send OTP to phone number prioritizing WhatsApp with fallback
 const sendOTP = async (phoneNumber: string, OTPSender?: string) => {
   const user = await prisma.user.findUnique({ where: { phoneNumber } });
 
@@ -97,70 +111,81 @@ const sendOTP = async (phoneNumber: string, OTPSender?: string) => {
     };
   }
 
-  const channel = resolveOTPChannel(OTPSender);
+  const { primary, fallback } = await resolvePrimaryOTPChannel(OTPSender);
 
   const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
   const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
 
   console.log(`========================================`);
   console.log(`[OTP GENERATED & SENT]`);
-  console.log(`📱 Phone Number: ${phoneNumber}`);
-  console.log(`📡 Channel     : ${channel}`);
-  console.log(`🔑 DEV OTP CODE: ${generatedOtp} (or master: 123456)`);
+  console.log(`📱 Phone Number : ${phoneNumber}`);
+  console.log(`📡 Target Channel: ${primary} (Fallback: ${fallback || "none"})`);
+  console.log(`🔑 DEV OTP CODE : ${generatedOtp} (or master: 123456)`);
   console.log(`========================================`);
 
+  let channelUsed: OTPChannel = primary;
+  let verificationStatus = "pending";
+  let sendSuccess = false;
+
+  // 1. Try sending via primary channel (WhatsApp prioritized)
   try {
-    // Send OTP via Twilio
     const verification = await client.verify.v2
       .services(`${config.twilio.serviceSid}`)
-      .verifications.create({ to: phoneNumber, channel });
+      .verifications.create({ to: phoneNumber, channel: primary });
 
-    console.log(`[Twilio OTP Sent Status]: ${verification.status}`);
+    console.log(`[Twilio OTP Sent via ${primary}]: ${verification.status}`);
+    verificationStatus = verification.status;
+    sendSuccess = true;
+  } catch (primaryErr: any) {
+    console.warn(
+      `Primary OTP channel (${primary}) failed: ${primaryErr.message || primaryErr.code}`
+    );
 
-    // Track user, save OTP to database
-    await prisma.user.upsert({
-      where: { phoneNumber },
-      update: {
-        otp: generatedOtp,
-        otpExpiresAt: otpExpiresAt,
-      },
-      create: {
-        phoneNumber,
-        otp: generatedOtp,
-        otpExpiresAt: otpExpiresAt,
-        referralCode: generateReferralCode(),
-      },
-    });
+    // 2. If primary (WhatsApp) failed and fallback (SMS) is available, try fallback
+    if (fallback) {
+      console.log(`Attempting fallback OTP via ${fallback}...`);
+      try {
+        const fallbackVerification = await client.verify.v2
+          .services(`${config.twilio.serviceSid}`)
+          .verifications.create({ to: phoneNumber, channel: fallback });
 
-    return {
-      message: "OTP sent successfully",
-      status: verification.status, // usually "pending"
-      otp: generatedOtp, // returned for development UI / debugging if needed
-    };
-  } catch (error: any) {
-    console.error("Twilio OTP Error (Saving local OTP anyway for dev):", error.code || error.message);
-
-    // Save local OTP even if Twilio fails so dev testing continues
-    await prisma.user.upsert({
-      where: { phoneNumber },
-      update: {
-        otp: generatedOtp,
-        otpExpiresAt: otpExpiresAt,
-      },
-      create: {
-        phoneNumber,
-        otp: generatedOtp,
-        otpExpiresAt: otpExpiresAt,
-        referralCode: generateReferralCode(),
-      },
-    });
-
-    return {
-      message: "OTP sent (Development mode)",
-      status: "pending",
-      otp: generatedOtp,
-    };
+        console.log(
+          `[Twilio Fallback OTP Sent via ${fallback}]: ${fallbackVerification.status}`
+        );
+        channelUsed = fallback;
+        verificationStatus = fallbackVerification.status;
+        sendSuccess = true;
+      } catch (fallbackErr: any) {
+        console.error(
+          `Fallback OTP channel (${fallback}) also failed: ${fallbackErr.message || fallbackErr.code}`
+        );
+      }
+    }
   }
+
+  // Track user, save OTP to database
+  await prisma.user.upsert({
+    where: { phoneNumber },
+    update: {
+      otp: generatedOtp,
+      otpExpiresAt: otpExpiresAt,
+    },
+    create: {
+      phoneNumber,
+      otp: generatedOtp,
+      otpExpiresAt: otpExpiresAt,
+      referralCode: generateReferralCode(),
+    },
+  });
+
+  return {
+    message: sendSuccess
+      ? `OTP sent successfully via ${channelUsed}`
+      : "OTP sent (Development mode)",
+    channel: channelUsed,
+    status: verificationStatus,
+    otp: generatedOtp, // returned for development UI / debugging if needed
+  };
 };
 
 // // Verify OTP and login

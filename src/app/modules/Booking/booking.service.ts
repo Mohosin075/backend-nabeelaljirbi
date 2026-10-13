@@ -7,6 +7,7 @@ import { CreateBookingPayload } from "./booking.interface";
 import { BookingSchedulerService } from "../../jobs/services/bookingScheduler.service";
 import { broadcastBookingUpdate } from "../../../helpars/socket/socketHandler";
 import { Notification } from "../Notification/notification.service";
+import { NotificationTemplateService } from "../NotificationTemplate/notificationTemplate.service";
 
 /**
  * 4 — Booking Flow
@@ -668,6 +669,49 @@ const confirmBooking = async (
     console.error("Error scheduling confirmed timeout:", autoSettleErr);
   }
 
+  // FCM Push notification to patient using NotificationTemplate
+  try {
+    const userLang: "ar" | "en" =
+      (appointment.patient?.user as any)?.language === "en" ? "en" : "ar";
+    const isEn = userLang === "en";
+
+    const rendered = await NotificationTemplateService.renderNotification(
+      "BOOKING_CONFIRMED",
+      userLang,
+      {
+        doctorName:
+          appointment.doctor.user?.fullName || (isEn ? "Doctor" : "الطبيب"),
+        clinicName:
+          appointment.clinic?.clinicName || (isEn ? "Clinic" : "العيادة"),
+        clinicAddress:
+          appointment.clinic?.location ||
+          appointment.clinic?.user?.address ||
+          "",
+        queueNumber: updatedBooking.serialNumber,
+        estimatedTime:
+          updatedBooking.approximateEstimatedTime ||
+          updatedBooking.startTime ||
+          "",
+        date: new Date(updatedBooking.consultDate).toISOString().split("T")[0],
+        patientName:
+          appointment.patient.user?.fullName || (isEn ? "Patient" : "المريض"),
+      }
+    );
+
+    if (rendered.pushEnabled && appointment.patient.user?.fcmToken) {
+      await Notification.PatientNotification(
+        updatedBooking.id,
+        updatedBooking.patientId,
+        "APPOINTMENT_CONFIRMED",
+        rendered.title,
+        rendered.body,
+        appointment.patient.user.fcmToken
+      );
+    }
+  } catch (fcmErr) {
+    console.error("FCM error on booking confirmation:", fcmErr);
+  }
+
   return updatedBooking;
 };
 
@@ -800,6 +844,40 @@ const rejectBooking = async (
     });
   } catch (wsErr) {
     console.error("WS broadcast error:", wsErr);
+  }
+
+  // FCM Push notification to patient using NotificationTemplate
+  try {
+    const userLang: "ar" | "en" =
+      (appointment.patient?.user as any)?.language === "en" ? "en" : "ar";
+    const isEn = userLang === "en";
+
+    const rendered = await NotificationTemplateService.renderNotification(
+      "BOOKING_REJECTED",
+      userLang,
+      {
+        doctorName:
+          appointment.doctor.user?.fullName || (isEn ? "Doctor" : "الطبيب"),
+        clinicName:
+          appointment.clinic?.clinicName || (isEn ? "Clinic" : "العيادة"),
+        reason: reasonText,
+        patientName:
+          appointment.patient.user?.fullName || (isEn ? "Patient" : "المريض"),
+      }
+    );
+
+    if (rendered.pushEnabled && appointment.patient.user?.fcmToken) {
+      await Notification.PatientNotification(
+        rejectedBooking.id,
+        rejectedBooking.patientId,
+        "APPOINTMENT_REJECTED",
+        rendered.title,
+        rendered.body,
+        appointment.patient.user.fcmToken
+      );
+    }
+  } catch (fcmErr) {
+    console.error("FCM error on booking rejection:", fcmErr);
   }
 
   return rejectedBooking;
@@ -1214,18 +1292,38 @@ const cancelBooking = async (
     // Step J: FCM push notification to patient (if cancelled by clinic/doctor/admin)
     if (cancelledBy !== "PATIENT" && booking.patient?.user?.fcmToken) {
       try {
-        await Notification.PatientNotification(
-          booking.id,
-          booking.patientId,
-          "APPOINTMENT_CANCELLED",
-          "Appointment Cancelled & 100% Refunded",
-          `Your appointment with Dr. ${
-            booking.doctor?.user?.fullName || "Doctor"
-          } on ${new Date(
-            booking.consultDate
-          ).toLocaleDateString()} has been cancelled. Reason: ${cancelReasonText}.`,
-          booking.patient.user.fcmToken
+        const userLang: "ar" | "en" =
+          (booking.patient?.user as any)?.language === "en" ? "en" : "ar";
+        const isEn = userLang === "en";
+
+        const rendered = await NotificationTemplateService.renderNotification(
+          "BOOKING_CANCELLED",
+          userLang,
+          {
+            doctorName:
+              booking.doctor?.user?.fullName || (isEn ? "Doctor" : "الطبيب"),
+            clinicName:
+              booking.clinic?.clinicName || (isEn ? "Clinic" : "العيادة"),
+            date: new Date(booking.consultDate).toISOString().split("T")[0],
+            refundNotice: isEn
+              ? "The full service fee has been refunded to your wallet."
+              : "تم استرداد المبلغ بالكامل إلى محفظتك.",
+            cancelledBy: cancelledBy,
+            patientName:
+              booking.patient?.user?.fullName || (isEn ? "Patient" : "المريض"),
+          }
         );
+
+        if (rendered.pushEnabled) {
+          await Notification.PatientNotification(
+            booking.id,
+            booking.patientId,
+            "APPOINTMENT_CANCELLED",
+            rendered.title,
+            rendered.body,
+            booking.patient.user.fcmToken
+          );
+        }
       } catch (fcmErr) {
         console.error("FCM error on cancellation:", fcmErr);
       }

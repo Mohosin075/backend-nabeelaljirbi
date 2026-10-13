@@ -10,6 +10,9 @@ import { BookingStatus, TopUpType } from '@prisma/client';
 import { BookingService } from '../../modules/Booking/booking.service';
 import { broadcastBookingUpdate } from '../../../helpars/socket/socketHandler';
 
+import admin from '../../../helpars/firebase/firebase';
+import { NotificationTemplateService } from '../../modules/NotificationTemplate/notificationTemplate.service';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Booking Notification Worker (existing — 24h / 3h reminders)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24,10 +27,11 @@ async function sendNotification(
   startTime: string
 ) {
   try {
-    const [patient, doctor, clinic] = await Promise.all([
+    const [patient, doctor, clinic, appointment] = await Promise.all([
       prisma.patient.findUnique({ where: { id: patientId }, include: { user: true } }),
       prisma.doctor.findUnique({ where: { id: doctorId }, include: { user: true } }),
       prisma.clinic.findUnique({ where: { id: clinicId }, include: { user: true } }),
+      prisma.bookingAppointment.findUnique({ where: { id: appointmentId } }),
     ]);
 
     if (!patient || !doctor || !clinic) {
@@ -35,47 +39,112 @@ async function sendNotification(
       return;
     }
 
-    const timeBeforeAppointment = notificationType === '24_HOUR' ? '24 hours' : '3 hours';
-    const message =
-      `You have an appointment with Dr. ${doctor.user.fullName || 'Doctor'} ` +
-      `at ${clinic.clinicName || 'Clinic'} in ${timeBeforeAppointment}. ` +
-      `Date: ${new Date(consultDate).toLocaleDateString()}, Time: ${startTime}`;
+    const eventKey = notificationType === '24_HOUR' ? 'REMINDER_24H' : 'REMINDER_3H';
+    const queueNumber = appointment?.serialNumber ? String(appointment.serialNumber) : '1';
+    const formattedDate = new Date(consultDate).toISOString().split('T')[0];
 
-    await Promise.all([
-      prisma.doctorNotification.create({
-        data: {
-          doctorId,
-          bookingAppointmentId: appointmentId,
-          notificationType: `APPOINTMENT_REMINDER_${notificationType}`,
-        },
-      }),
-      prisma.clinicNotification.create({
-        data: {
-          clinicId,
-          bookingAppointmentId: appointmentId,
-          notificationType: `APPOINTMENT_REMINDER_${notificationType}`,
-        },
-      }),
-      prisma.patientNotification.create({
-        data: {
-          patientId,
-          bookingAppointmentId: appointmentId,
-          notificationType: `APPOINTMENT_REMINDER_${notificationType}`,
-          title: 'Appointment Reminder',
-          description: message,
-        },
-      }),
-    ]);
+    // Patient language preference: 'en' if set, otherwise default to 'ar'
+    const patientLang: 'ar' | 'en' = (patient.user as any)?.language === 'en' ? 'en' : 'ar';
+    const isEn = patientLang === 'en';
 
-    if (patient.user.fcmToken) {
-      console.log(`📱 Would send FCM to patient: ${message}`);
+    // Render reminder using independent Arabic / English templates
+    const rendered = await NotificationTemplateService.renderNotification(eventKey, patientLang, {
+      doctorName: doctor.user.fullName || (isEn ? 'Doctor' : 'الطبيب'),
+      clinicName: clinic.clinicName || (isEn ? 'Clinic' : 'العيادة'),
+      clinicAddress: clinic.location || clinic.user.address || '',
+      date: formattedDate,
+      time: startTime,
+      queueNumber,
+      patientName: patient.user.fullName || (isEn ? 'Patient' : 'المريض'),
+    });
+
+    if (!rendered.isActive) {
+      console.log(`Notification template ${eventKey} is inactive, skipping send`);
+      return;
+    }
+
+    // 1. In-app notifications
+    if (rendered.inAppEnabled) {
+      await Promise.all([
+        prisma.doctorNotification.create({
+          data: {
+            doctorId,
+            bookingAppointmentId: appointmentId,
+            notificationType: `APPOINTMENT_REMINDER_${notificationType}`,
+          },
+        }),
+        prisma.clinicNotification.create({
+          data: {
+            clinicId,
+            bookingAppointmentId: appointmentId,
+            notificationType: `APPOINTMENT_REMINDER_${notificationType}`,
+            title: rendered.title,
+            description: rendered.body,
+          },
+        }),
+        prisma.patientNotification.create({
+          data: {
+            patientId,
+            bookingAppointmentId: appointmentId,
+            notificationType: `APPOINTMENT_REMINDER_${notificationType}`,
+            title: rendered.title,
+            description: rendered.body,
+          },
+        }),
+      ]);
+    }
+
+    // 2. FCM Push Notification (Primary Channel)
+    if (rendered.pushEnabled && patient.user.fcmToken) {
+      const fcmPayload: any = {
+        notification: {
+          title: rendered.title,
+          body: rendered.body,
+        },
+        data: {
+          appointmentId,
+          notificationType: eventKey,
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+        android: {
+          priority: 'high' as const,
+          notification: {
+            channelId: 'default_channel',
+            sound: 'notification_sound',
+            priority: 'high' as const,
+            defaultSound: true,
+            defaultVibrateTimings: true,
+          },
+        },
+        apns: {
+          payload: {
+            aps: {
+              sound: 'notification_sound.aiff',
+              alert: {
+                title: rendered.title,
+                body: rendered.body,
+              },
+              badge: 1,
+              category: 'APPOINTMENT_REMINDER',
+            },
+          },
+        },
+        token: patient.user.fcmToken,
+      };
+
+      try {
+        const response = await admin.messaging().send(fcmPayload);
+        console.log(`📱 FCM Reminder sent successfully to patient (${eventKey}):`, response);
+      } catch (fcmErr) {
+        console.error(`❌ FCM error sending reminder to patient:`, fcmErr);
+      }
     }
 
     console.log(
-      `✅ Reminder sent to patient ${patientId} for appointment ${appointmentId} (${timeBeforeAppointment})`
+      `✅ Reminder (${eventKey}) processed for appointment ${appointmentId} to patient ${patientId}`
     );
   } catch (error) {
-    console.error('Error sending notification:', error);
+    console.error('Error sending reminder notification:', error);
     throw error;
   }
 }

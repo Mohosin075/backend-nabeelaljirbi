@@ -3,33 +3,53 @@ import admin from "../../../helpars/firebase/firebase";
 import { IPaginationOptions } from "../../../interfaces/paginations";
 import prisma from "../../../shared/prisma";
 import { paginationHelpers } from "../../../utils/paginationHelper";
+import { NotificationTemplateService } from "../NotificationTemplate/notificationTemplate.service";
 
 const DoctorNotification = async (
   appointmentId: string,
   doctorId: string,
   notificationType: string,
-  fcmToken?: string
+  fcmToken?: string,
+  lang: "ar" | "en" = "ar",
+  variables: Record<string, any> = {}
 ) => {
   console.log("Sending doctor notification...");
+
+  // Render template if available
+  const rendered = await NotificationTemplateService.renderNotification(
+    notificationType,
+    lang,
+    variables
+  );
+
+  const title = rendered.title || notificationType;
+  const body = rendered.body || "";
 
   await prisma.doctorNotification.create({
     data: {
       doctorId,
       notificationType,
       bookingAppointmentId: appointmentId,
-    }
-  })
+    },
+  });
+
+  if (!fcmToken) {
+    const doctor = await prisma.doctor.findUnique({
+      where: { id: doctorId },
+      include: { user: true },
+    });
+    fcmToken = doctor?.user?.fcmToken || undefined;
+  }
 
   if (!fcmToken) {
     console.log("FCM token is null");
     return { success: false, message: "FCM token is null" };
   }
 
-
   const message = {
     notification: {
-      title: `${notificationType}`,
-      body: "",
+      title,
+      body,
     },
     data: {
       appointmentId,
@@ -47,8 +67,8 @@ const DoctorNotification = async (
         aps: {
           sound: "notification_sound.aiff",
           alert: {
-            title: `${notificationType}`,
-            body: `${notificationType}`,
+            title,
+            body: body || title,
           },
           category: "CALL_CATEGORY",
         },
@@ -146,18 +166,41 @@ const PatientNotification = async (
   title?: string,
   description?: string,
   fcmToken?: string,
+  lang: "ar" | "en" = "ar",
+  variables: Record<string, any> = {}
 ) => {
   console.log('Sending patient notification...', patientId);
+
+  let finalTitle = title;
+  let finalDescription = description;
+
+  if (!finalTitle || !finalDescription) {
+    const rendered = await NotificationTemplateService.renderNotification(
+      notificationType,
+      lang,
+      variables
+    );
+    if (!finalTitle && rendered.title) finalTitle = rendered.title;
+    if (!finalDescription && rendered.body) finalDescription = rendered.body;
+  }
 
   await prisma.patientNotification.create({
     data: {
       patientId,
       notificationType,
       bookingAppointmentId: appointmentId || undefined,
-      title,
-      description,
+      title: finalTitle,
+      description: finalDescription,
     },
   });
+
+  if (!fcmToken) {
+    const patient = await prisma.patient.findUnique({
+      where: { id: patientId },
+      include: { user: true },
+    });
+    fcmToken = patient?.user?.fcmToken || undefined;
+  }
 
   if (!fcmToken) {
     console.log('FCM token is null');
@@ -333,8 +376,19 @@ const getDoctorNotification = async (
     },
   });
 
+  if (!user?.doctor?.id) {
+    return {
+      meta: {
+        page,
+        limit,
+        total: 0,
+      },
+      data: [],
+    };
+  }
+
   const andConditions: Prisma.DoctorNotificationWhereInput[] = [
-    { doctorId: user?.doctor?.id }
+    { doctorId: user.doctor.id },
   ];
 
   if (search) {
@@ -500,11 +554,19 @@ const getPatientNotification = async (
   });
 
 
-  console.log("Patient ID", userWithPatient?.patient?.id)
-
+  if (!userWithPatient?.patient?.id) {
+    return {
+      meta: {
+        page,
+        limit,
+        total: 0,
+      },
+      data: [],
+    };
+  }
 
   const where: Prisma.PatientNotificationWhereInput = {
-    patientId: userWithPatient?.patient?.id
+    patientId: userWithPatient.patient.id,
   };
 
   const result = await prisma.patientNotification.findMany({

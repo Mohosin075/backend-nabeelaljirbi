@@ -648,7 +648,7 @@ model Withdraw {
 model OTPSystem {
   id String @id @default(cuid())
 
-  SMS      Boolean @default(true)
+  SMS      Boolean @default(false)
   WhatsApp Boolean @default(true)
 
   createdAt DateTime @default(now())
@@ -876,4 +876,36 @@ model UserAgreementAcceptance {
   @@index([userId, role])
   @@index([documentId])
   @@map("user_agreement_acceptances")
+}
+
+model NotificationTemplate {
+  id              String   @id @default(cuid())
+  eventKey        String   @unique
+  name            String
+  description     String?
+
+  // English wording (independent entry)
+  titleEn         String
+  bodyEn          String   @db.Text
+
+  // Arabic wording (independent entry)
+  titleAr         String
+  bodyAr          String   @db.Text
+
+  // Delivery channels
+  pushEnabled     Boolean  @default(true)
+  inAppEnabled    Boolean  @default(true)
+  whatsappEnabled Boolean  @default(true)
+  smsEnabled      Boolean  @default(false)
+
+  // Variables list e.g. ["patientName", "doctorName", "clinicName", "date", "time", "queueNumber"]
+  variables       String[] @default([])
+
+  isActive        Boolean  @default(true)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([eventKey])
+  @@map("notification_templates")
 }
