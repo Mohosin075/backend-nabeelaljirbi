@@ -27,9 +27,16 @@ const auth = (...roles: string[]) => {
         config.jwt.jwt_secret as Secret
       );
 
-      const user = await prisma.user.findUnique({
+      const user = await prisma.user.findFirst({
         where: {
-          phoneNumber: verifiedUser.phoneNumber,
+          OR: [
+            ...(verifiedUser.id ? [{ id: verifiedUser.id }] : []),
+            ...(verifiedUser.phoneNumber ? [{ phoneNumber: verifiedUser.phoneNumber }] : []),
+          ],
+        },
+        include: {
+          clinic: true,
+          manager: true,
         },
       });
 
@@ -37,15 +44,26 @@ const auth = (...roles: string[]) => {
         throw new ApiError(httpStatus.NOT_FOUND, "This user is not found !");
       }
 
-      if (roles.length && !roles.includes(verifiedUser.role)) {
+      let effectiveRole = user.role || verifiedUser.role;
+
+      if (!effectiveRole) {
+        if (user.clinic) effectiveRole = "CLINIC";
+        else if (user.manager && user.manager.length > 0) effectiveRole = "MANAGER";
+      }
+
+      if (
+        roles.length &&
+        effectiveRole !== "ADMIN" &&
+        (!effectiveRole || !roles.includes(effectiveRole))
+      ) {
         throw new ApiError(httpStatus.FORBIDDEN, "Forbidden!");
       }
 
-      // if (user?.accessToken !== token) {
-      //   throw new ApiError(401, "Invalid token!");
-      // }
-
-      req.user = verifiedUser;
+      req.user = {
+        ...verifiedUser,
+        ...user,
+        role: effectiveRole,
+      };
 
       next();
     } catch (err) {

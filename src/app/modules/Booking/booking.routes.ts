@@ -16,33 +16,33 @@ router.post(
 
 router.get(
   "/",
-  auth(UserRole.PATIENT, UserRole.DOCTOR, UserRole.CLINIC),
+  auth(UserRole.PATIENT, UserRole.DOCTOR, UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   BookingController.getBookings
 );
 
 router.patch(
   "/:appointmentId/confirm",
-  auth(UserRole.DOCTOR, UserRole.CLINIC, UserRole.ADMIN),
+  auth(UserRole.DOCTOR, UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   validateRequest(bookingValidation.approveBookingValidationSchema),
   BookingController.confirmBooking
 );
 
 router.patch(
   "/:appointmentId/reject",
-  auth(UserRole.CLINIC, UserRole.ADMIN),
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   validateRequest(bookingValidation.rejectBookingValidationSchema),
   BookingController.rejectBooking
 );
 
 router.patch(
   "/:appointmentId/cancel",
-  auth(UserRole.PATIENT, UserRole.DOCTOR, UserRole.CLINIC, UserRole.ADMIN),
+  auth(UserRole.PATIENT, UserRole.DOCTOR, UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   BookingController.cancelBooking
 );
 
 router.patch(
   "/:appointmentId/complete",
-  auth(UserRole.DOCTOR, UserRole.CLINIC, UserRole.ADMIN),
+  auth(UserRole.DOCTOR, UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   BookingController.completeBooking
 );
 

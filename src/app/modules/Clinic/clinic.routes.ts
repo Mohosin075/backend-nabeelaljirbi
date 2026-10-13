@@ -93,7 +93,7 @@ router.delete(
 
 router.patch(
   "/bookings/status",
-  auth(UserRole.CLINIC, UserRole.MANAGER),
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   ClinicController.updateBookingStatus
 );
 
@@ -111,25 +111,25 @@ router.get(
 
 router.patch(
   "/update/appointment-status",
-  auth(UserRole.CLINIC, UserRole.MANAGER),
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   ClinicController.updateAppointmentStatus
 );
 
 router.patch(
   "/manager-update/appointment-status",
-  auth(UserRole.MANAGER, UserRole.CLINIC),
+  auth(UserRole.MANAGER, UserRole.CLINIC, UserRole.ADMIN),
   ClinicController.managerUpdateAppointmentStatus
 );
 
 router.get(
   "/doctor-absence/caseload",
-  auth(UserRole.CLINIC, UserRole.MANAGER),
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   ClinicController.getDoctorAbsenceCaseload
 );
 
 router.post(
   "/doctor-absence/execute",
-  auth(UserRole.CLINIC, UserRole.MANAGER),
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   validateRequest(clinicValidation.executeDoctorAbsenceValidationSchema),
   ClinicController.executeDoctorAbsence
 );
@@ -186,6 +186,18 @@ router.patch(
   "/join-request/:requestId/status",
   auth(),
   ClinicController.respondJoinRequest
+);
+
+router.get(
+  "/reconciliation-reports",
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  ClinicController.getClinicReconciliationReports
+);
+
+router.get(
+  "/financial-summary",
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  ClinicController.getClinicFinancialSummary
 );
 
 export const ClinicRoutes = router;

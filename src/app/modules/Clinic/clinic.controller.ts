@@ -551,6 +551,54 @@ const executeDoctorAbsence = catchAsync(
   }
 );
 
+const getClinicReconciliationReports = catchAsync(
+  async (req: Request, res: Response) => {
+    const userId = req.user.id;
+    const filters = pick(req.query, [
+      "doctorId",
+      "period",
+      "startDate",
+      "endDate",
+      "status",
+      "searchTerm",
+    ]);
+    const options = pick(req.query, paginationFields);
+
+    const result = await ClinicService.getClinicReconciliationReports(
+      userId,
+      filters,
+      options
+    );
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Clinic reconciliation reports retrieved successfully",
+      meta: result.meta,
+      data: {
+        summary: result.summary,
+        doctorBreakdown: result.doctorBreakdown,
+        data: result.data,
+      },
+    });
+  }
+);
+
+const getClinicFinancialSummary = catchAsync(
+  async (req: Request, res: Response) => {
+    const userId = req.user.id;
+
+    const result = await ClinicService.getClinicFinancialSummary(userId);
+
+    sendResponse(res, {
+      statusCode: httpStatus.OK,
+      success: true,
+      message: "Clinic financial summary retrieved successfully",
+      data: result,
+    });
+  }
+);
+
 export const ClinicController = {
   updateClinicProfile,
   getClinicProfile,
@@ -580,4 +628,6 @@ export const ClinicController = {
   respondJoinRequest,
   getDoctorAbsenceCaseload,
   executeDoctorAbsence,
+  getClinicReconciliationReports,
+  getClinicFinancialSummary,
 };

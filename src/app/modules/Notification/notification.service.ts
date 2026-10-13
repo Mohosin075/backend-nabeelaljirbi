@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { BookingStatus, Prisma } from "@prisma/client";
 import admin from "../../../helpars/firebase/firebase";
 import { IPaginationOptions } from "../../../interfaces/paginations";
 import prisma from "../../../shared/prisma";
@@ -461,16 +461,35 @@ const getClinicNotification = async (
   const { search } = filters;
 
   const user = await prisma.user.findUnique({
-    where: {
-      id: userId,
-    },
+    where: { id: userId },
     include: {
       clinic: true,
+      manager: {
+        include: { clinic: true },
+      },
     },
   });
 
+  let clinicId: string | undefined;
+  if (user?.clinic) {
+    clinicId = user.clinic.id;
+  } else if (user?.manager && user.manager.length > 0 && user.manager[0]?.clinic) {
+    clinicId = user.manager[0].clinic.id;
+  }
+
+  if (!clinicId) {
+    return {
+      meta: {
+        page,
+        limit,
+        total: 0,
+      },
+      data: [],
+    };
+  }
+
   const andConditions: Prisma.BookingAppointmentWhereInput[] = [
-    { clinicId: user?.clinic?.id }
+    { clinicId }
   ];
 
   if (search) {
@@ -491,11 +510,13 @@ const getClinicNotification = async (
   const result = await prisma.bookingAppointment.findMany({
     where: whereConditions,
     select: {
+      id: true,
       consultDate: true,
       startTime: true,
       endTime: true,
       serialNumber: true,
       status: true,
+      createdAt: true,
       patient: {
         select: {
           user: {
@@ -518,7 +539,6 @@ const getClinicNotification = async (
           }
         }
       }
-
     },
     skip,
     take: limit,
@@ -531,13 +551,36 @@ const getClinicNotification = async (
     where: whereConditions
   });
 
+  const formattedData = result.map((item) => {
+    const patientName = item.patient?.user?.fullName || "Patient";
+    const doctorName = item.doctor?.user?.fullName || "Doctor";
+    const dateStr = item.consultDate instanceof Date
+      ? item.consultDate.toISOString().slice(0, 10)
+      : String(item.consultDate);
+
+    return {
+      id: item.id,
+      title: `Booking #${item.serialNumber} (${item.status})`,
+      body: `${patientName} - Dr. ${doctorName} on ${dateStr} (${item.startTime} - ${item.endTime})`,
+      isRead: item.status !== BookingStatus.PENDING,
+      createdAt: item.createdAt,
+      status: item.status,
+      serialNumber: item.serialNumber,
+      consultDate: item.consultDate,
+      startTime: item.startTime,
+      endTime: item.endTime,
+      patient: item.patient,
+      doctor: item.doctor,
+    };
+  });
+
   return {
     meta: {
       page,
       limit,
       total
     },
-    data: result
+    data: formattedData
   };
 };
 
