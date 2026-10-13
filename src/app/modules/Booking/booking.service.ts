@@ -1,10 +1,12 @@
-import { BookingStatus, TopUpType, WeekDay } from "@prisma/client";
+import { BookingStatus, TopUpType, UserRole, WeekDay } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
 import { paginationHelpers } from "../../../utils/paginationHelper";
 import prisma from "../../../shared/prisma";
 import { CreateBookingPayload } from "./booking.interface";
 import { BookingSchedulerService } from "../../jobs/services/bookingScheduler.service";
+import { broadcastBookingUpdate } from "../../../helpars/socket/socketHandler";
+import { Notification } from "../Notification/notification.service";
 
 /**
  * 4 — Booking Flow
@@ -264,6 +266,13 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
   );
   const collectionMode = clinic.collectionMode || "MODE_A";
 
+  // Section 6: Clinic-side percentage-based service fee lifecycle
+  // "This governs the patient's service fee and any per-booking fee charged to a clinic alike;
+  // the clinic-side mechanism exists in V1 but needs rebuilding against this lifecycle and the percentage-based calculation."
+  const clinicServiceFee = !clinic.trial
+    ? Number(((consultFee * serviceFeePercentage) / 100).toFixed(2))
+    : 0;
+
   // Mode A: Service fee only is frozen (hold)
   // Mode B: Service fee + consultation fee is frozen (hold)
   const holdAmount =
@@ -287,13 +296,25 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
 
   // 9. Execute transaction: Freeze wallet hold & create booking request
   const booking = await prisma.$transaction(async (tx) => {
-    // Freeze the hold amount
+    // Freeze the patient hold amount
     if (holdAmount > 0) {
       await tx.user.update({
         where: { id: user.id },
         data: {
           frozenWallet: {
             increment: holdAmount,
+          },
+        },
+      });
+    }
+
+    // Freeze clinic per-booking fee hold (Section 6: "frozen at booking, both sides")
+    if (clinicServiceFee > 0 && clinic.userId) {
+      await tx.user.update({
+        where: { id: clinic.userId },
+        data: {
+          frozenWallet: {
+            increment: clinicServiceFee,
           },
         },
       });
@@ -321,7 +342,7 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
         familyMemberRelation:
           bookedFor === "FAMILY" ? familyMemberRelation : null,
         approximateEstimatedTime,
-        clinicServiceFee: 0,
+        clinicServiceFee,
         patientServiceFee: serviceFeeAmount,
       },
       include: {
@@ -445,9 +466,15 @@ const confirmBooking = async (
     );
   }
 
-  const adminUser = await prisma.user.findUnique({
+  let adminUser = await prisma.user.findUnique({
     where: { phoneNumber: `${process.env.ADMIN_PHONE_NUMBER}` },
   });
+
+  if (!adminUser) {
+    adminUser = await prisma.user.findFirst({
+      where: { role: UserRole.ADMIN },
+    });
+  }
 
   if (!adminUser) {
     throw new ApiError(httpStatus.NOT_FOUND, "Admin user not found");
@@ -512,7 +539,59 @@ const confirmBooking = async (
       });
     }
 
-    // 4. Update booking status to CONFIRMED
+    // 4. Capture clinic service fee: deduct from clinic wallet and unfreeze clinic hold (Section 6)
+    const clinicServiceFee = appointment.clinicServiceFee || 0;
+    if (clinicServiceFee > 0 && clinicUserId) {
+      await tx.user.update({
+        where: { id: clinicUserId },
+        data: {
+          wallet: { decrement: clinicServiceFee },
+          frozenWallet: { decrement: clinicServiceFee },
+        },
+      });
+
+      await tx.user.update({
+        where: { id: adminUser.id },
+        data: {
+          wallet: { increment: clinicServiceFee },
+        },
+      });
+
+      await tx.topUp.create({
+        data: {
+          userId: clinicUserId,
+          amount: clinicServiceFee,
+          appointmentId: appointment.id,
+          type: TopUpType.BOOKING,
+        },
+      });
+
+      await tx.topUp.create({
+        data: {
+          userId: adminUser.id,
+          amount: clinicServiceFee,
+          appointmentId: appointment.id,
+          type: TopUpType.BOOKING,
+        },
+      });
+    }
+
+    // 5. Record AdminTransaction ledger entry (Section 10 dedicated ledger traceability)
+    if (serviceFeeAmount > 0 || clinicServiceFee > 0) {
+      await tx.adminTransaction.create({
+        data: {
+          userId: patientUserId,
+          clinicId: clinicUserId,
+          patientServiceFee: serviceFeeAmount,
+          clinicServiceFee: clinicServiceFee,
+          totalAmount: Number((serviceFeeAmount + clinicServiceFee).toFixed(2)),
+          appointmentId: appointment.id,
+          type: TopUpType.BOOKING,
+        },
+      });
+    }
+
+    // 6. Update booking status to CONFIRMED
     const confirmed = await tx.bookingAppointment.update({
       where: { id: appointmentId },
       data: {
@@ -520,7 +599,7 @@ const confirmBooking = async (
       },
     });
 
-    // 5. Patient notification with queue position and estimated time
+    // 7. Patient notification with queue position and estimated time
     await tx.patientNotification.create({
       data: {
         patientId: appointment.patientId,
@@ -593,7 +672,7 @@ const confirmBooking = async (
 };
 
 /**
- * Rejection / silence by deadline unfreezes full hold and moves booking to REJECTED
+ * Rejection / silence by deadline unfreezes full hold and moves booking to REJECTED or CANCELLED
  */
 const rejectBooking = async (
   appointmentId: string,
@@ -622,6 +701,15 @@ const rejectBooking = async (
 
   const patientUserId = appointment.patient.userId;
   const holdAmount = appointment.holdAmount || 0;
+  const newStatus =
+    cancelledBy === "PATIENT"
+      ? BookingStatus.CANCELLED
+      : BookingStatus.REJECTED;
+  const defaultReason =
+    cancelledBy === "PATIENT"
+      ? "Cancelled by patient"
+      : "Clinic rejected booking request";
+  const reasonText = reason?.trim() || defaultReason;
 
   // Execute rejection transaction: Unfreeze full hold amount
   const rejectedBooking = await prisma.$transaction(async (tx) => {
@@ -635,39 +723,83 @@ const rejectBooking = async (
       });
     }
 
+    // Unfreeze the clinic's wallet hold (Section 6: "released in full on rejection or auto-reject")
+    const clinicHold = appointment.clinicServiceFee || 0;
+    const clinicUserId = appointment.clinic?.userId;
+    if (clinicHold > 0 && clinicUserId) {
+      await tx.user.update({
+        where: { id: clinicUserId },
+        data: {
+          frozenWallet: { decrement: clinicHold },
+        },
+      });
+    }
+
     const updated = await tx.bookingAppointment.update({
       where: { id: appointmentId },
       data: {
-        status: BookingStatus.REJECTED,
-        rejectionReason: reason || "Clinic rejected booking request",
+        status: newStatus,
+        rejectionReason: reasonText,
         cancelledBy,
-        cancellationReason: reason || "Clinic rejected booking request",
+        cancellationReason: reasonText,
       },
     });
 
     // Notify patient
-    const reasonText = reason || "Clinic rejected booking request";
+    const notifType =
+      cancelledBy === "PATIENT"
+        ? "APPOINTMENT_CANCELLED"
+        : "APPOINTMENT_REJECTED";
+    const notifTitle =
+      cancelledBy === "PATIENT"
+        ? "Booking Request Cancelled"
+        : "Booking Request Rejected";
+    const notifDesc =
+      cancelledBy === "PATIENT"
+        ? `Your appointment request for ${new Date(
+            appointment.consultDate
+          ).toLocaleDateString()} has been cancelled. Any frozen amount of ${holdAmount} LYD has been completely released back to your wallet.`
+        : `Your appointment request for ${new Date(
+            appointment.consultDate
+          ).toLocaleDateString()} was not accepted. Reason: ${reasonText}. Any frozen amount of ${holdAmount} LYD has been completely released back to your wallet.`;
+
     await tx.patientNotification.create({
       data: {
         patientId: appointment.patientId,
         bookingAppointmentId: appointment.id,
-        notificationType: "APPOINTMENT_REJECTED",
-        title: "Booking Request Rejected",
-        description: `Your appointment request for ${new Date(
-          appointment.consultDate
-        ).toLocaleDateString()} was not accepted. Reason: ${reasonText}. Any frozen amount of ${holdAmount} LYD has been completely released back to your wallet.`,
+        notificationType: notifType,
+        title: notifTitle,
+        description: notifDesc,
       },
     });
 
     return updated;
   });
 
-  // Cancel scheduled jobs
+  // Cancel scheduled BullMQ jobs
   try {
     await BookingSchedulerService.cancelPendingBookingTimeout(appointmentId);
     await BookingSchedulerService.cancelBookingNotifications(appointmentId);
   } catch (err) {
     console.error("Error cancelling jobs for rejected booking:", err);
+  }
+
+  // Broadcast WebSocket update for real-time synchronization across interfaces
+  try {
+    broadcastBookingUpdate({
+      bookingId: appointment.id,
+      status: newStatus,
+      clinicId: appointment.clinicId,
+      doctorId: appointment.doctorId,
+      patientId: appointment.patientId,
+      patientUserId: patientUserId,
+      clinicUserId: appointment.clinic?.userId,
+      reason: reasonText,
+      serialNumber: appointment.serialNumber,
+      consultDate: appointment.consultDate,
+    });
+  } catch (wsErr) {
+    console.error("WS broadcast error:", wsErr);
   }
 
   return rejectedBooking;
@@ -775,6 +907,13 @@ const getBookings = async (userId: string, role: string, options: any) => {
   };
 };
 
+/**
+ * 6 — Cancellation & Refunds
+ * One engine handles every cancellation path — there is no rescheduling mechanism anywhere in the system.
+ * - Patient-initiated cancellation is cancel-and-rebook: available up to 12 hours before the appointment, hard-blocked server-side after that point.
+ * - Any cancellation before the cutoff returns a full refund of both the consultation amount and the service fee;
+ * - A clinic- or doctor-initiated cancellation after confirmation refunds the patient in full, at any time.
+ */
 const cancelBooking = async (
   appointmentId: string,
   callerUserId?: string,
@@ -797,7 +936,8 @@ const cancelBooking = async (
   if (
     booking.status === BookingStatus.CANCELLED ||
     booking.status === BookingStatus.REJECTED ||
-    booking.status === BookingStatus.COMPLETE
+    booking.status === BookingStatus.COMPLETE ||
+    booking.status === BookingStatus.NOT_SHOW
   ) {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
@@ -817,19 +957,21 @@ const cancelBooking = async (
     ? "CLINIC"
     : "ADMIN";
 
-  // Case 1: If status is PENDING, simply unfreeze hold and reject
+  // Case 1: If status is PENDING, simply unfreeze hold and cancel/reject
   if (booking.status === BookingStatus.PENDING) {
-    const cancelReason = reason?.trim() || `Cancelled by ${cancelledBy.toLowerCase()}`;
-    return await rejectBooking(
-      appointmentId,
-      cancelReason,
-      cancelledBy
-    );
+    const cancelReason =
+      reason?.trim() || `Cancelled by ${cancelledBy.toLowerCase()}`;
+    return await rejectBooking(appointmentId, cancelReason, cancelledBy);
   }
 
-  // Case 2: If status is CONFIRMED, execute cancellation refund
-  if (booking.status === BookingStatus.CONFIRMED) {
-    // If patient-initiated: enforce 12-hour cutoff rule
+  // Case 2: If status is CONFIRMED, ARRIVED, or INPROGRESS
+  if (
+    booking.status === BookingStatus.CONFIRMED ||
+    booking.status === BookingStatus.ARRIVED ||
+    booking.status === BookingStatus.INPROGRESS
+  ) {
+    // 1. Patient-initiated cancellation: enforce 12-hour cutoff rule (Section 6)
+    // "Patient-initiated cancellation is cancel-and-rebook: available up to 12 hours before the appointment, hard-blocked server-side after that point."
     if (isPatient) {
       const consultDate = new Date(booking.consultDate);
       let consultHour = 0;
@@ -855,94 +997,165 @@ const cancelBooking = async (
       }
     }
 
-    const adminUser = await prisma.user.findUnique({
+    // 2. Fetch admin user for platform ledger transactions
+    let adminUser = await prisma.user.findUnique({
       where: { phoneNumber: `${process.env.ADMIN_PHONE_NUMBER}` },
     });
+    if (!adminUser) {
+      adminUser = await prisma.user.findFirst({
+        where: { role: UserRole.ADMIN },
+      });
+    }
+
+    if (!adminUser) {
+      throw new ApiError(httpStatus.NOT_FOUND, "Admin user not found");
+    }
 
     const patientUserId = booking.patient.userId;
     const clinicUserId = booking.clinic.userId;
-    const serviceFeeAmount = booking.serviceFeeAmount || 0;
+    const serviceFeeAmount =
+      booking.serviceFeeAmount || booking.patientServiceFee || 0;
     const consultFee = booking.consultFee || 0;
     const collectionMode = booking.collectionMode || "MODE_A";
 
     /**
-     * Issue #1 fix — Service fee is NON-REFUNDABLE once booking is confirmed.
-     * Section 6: "captured and non-refundable the moment a booking is confirmed
-     * regardless of what happens afterward."
-     *
-     * On cancellation of a CONFIRMED booking:
-     * - Mode A: patient only paid the service fee; they get NOTHING back.
-     * - Mode B: patient paid service fee + consult fee; they get back the CONSULT FEE only.
-     *   The clinic wallet must be decremented for the consult fee (already credited at confirm).
-     * The service fee stays with admin (platform) in both modes.
+     * Section 6 Full Refund Calculation:
+     * - Before cutoff (patient) OR at any time (clinic/doctor/admin):
+     *   "returns a full refund of both the consultation amount and the service fee"
+     *   Mode A: patient paid serviceFeeAmount -> 100% of serviceFeeAmount refunded.
+     *   Mode B: patient paid serviceFeeAmount + consultFee -> 100% of (serviceFeeAmount + consultFee) refunded.
      */
-    const refundToPatient =
-      collectionMode === "MODE_B" ? consultFee : 0;
+    const refundConsultFee = collectionMode === "MODE_B" ? consultFee : 0;
+    const refundServiceFee = serviceFeeAmount;
+    const totalRefundToPatient = Number(
+      (refundConsultFee + refundServiceFee).toFixed(2)
+    );
+    const cancelReasonText =
+      reason?.trim() || `Cancelled by ${cancelledBy.toLowerCase()}`;
 
     const updatedBooking = await prisma.$transaction(async (tx) => {
-      // 1. Refund patient consult fee (Mode B only; service fee is non-refundable)
-      if (refundToPatient > 0) {
-        await tx.user.update({
-          where: { id: patientUserId },
-          data: {
-            wallet: { increment: refundToPatient },
-          },
-        });
-
-        await tx.topUp.create({
-          data: {
-            userId: patientUserId,
-            amount: refundToPatient,
-            appointmentId: booking.id,
-            type: TopUpType.REFUND,
-          },
-        });
-      }
-
-      // 2. In Mode B: Reclaim consult fee from clinic wallet
-      if (collectionMode === "MODE_B" && consultFee > 0) {
+      // Step A: In Mode B, reclaim consultation fee from clinic wallet
+      if (refundConsultFee > 0 && clinicUserId) {
         await tx.user.update({
           where: { id: clinicUserId },
           data: {
-            wallet: { decrement: consultFee },
+            wallet: { decrement: refundConsultFee },
           },
         });
 
         await tx.topUp.create({
           data: {
             userId: clinicUserId,
-            amount: consultFee,
+            amount: refundConsultFee,
             appointmentId: booking.id,
             type: TopUpType.REFUND,
           },
         });
       }
 
-      // NOTE: Admin wallet is NOT touched — service fee is permanently retained by platform.
+      // Step B: Reclaim service fee from admin (platform) wallet
+      if (refundServiceFee > 0 && adminUser!.id) {
+        await tx.user.update({
+          where: { id: adminUser!.id },
+          data: {
+            wallet: { decrement: refundServiceFee },
+          },
+        });
 
-      // 3. Update appointment status
+        await tx.topUp.create({
+          data: {
+            userId: adminUser!.id,
+            amount: refundServiceFee,
+            appointmentId: booking.id,
+            type: TopUpType.REFUND,
+          },
+        });
+      }
+
+      // Step C: Refund 100% full amount (consultation + service fee) to patient wallet
+      if (totalRefundToPatient > 0 && patientUserId) {
+        await tx.user.update({
+          where: { id: patientUserId },
+          data: {
+            wallet: { increment: totalRefundToPatient },
+          },
+        });
+
+        await tx.topUp.create({
+          data: {
+            userId: patientUserId,
+            amount: totalRefundToPatient,
+            appointmentId: booking.id,
+            type: TopUpType.REFUND,
+          },
+        });
+      }
+
+      // Step D: If patient cancelled with valid advance notice (≥12h) and clinic had paid clinicServiceFee > 0:
+      // Refund clinicServiceFee back to clinic from admin
+      if (
+        isPatient &&
+        booking.clinicServiceFee > 0 &&
+        clinicUserId &&
+        adminUser!.id
+      ) {
+        await tx.user.update({
+          where: { id: clinicUserId },
+          data: { wallet: { increment: booking.clinicServiceFee } },
+        });
+
+        await tx.user.update({
+          where: { id: adminUser!.id },
+          data: { wallet: { decrement: booking.clinicServiceFee } },
+        });
+
+        await tx.topUp.create({
+          data: {
+            userId: clinicUserId,
+            amount: booking.clinicServiceFee,
+            appointmentId: booking.id,
+            type: TopUpType.REFUND,
+          },
+        });
+
+        await tx.topUp.create({
+          data: {
+            userId: adminUser!.id,
+            amount: booking.clinicServiceFee,
+            appointmentId: booking.id,
+            type: TopUpType.REFUND,
+          },
+        });
+      }
+
+      // Step E: Update booking record
       const updated = await tx.bookingAppointment.update({
         where: { id: appointmentId },
         data: {
           status: BookingStatus.CANCELLED,
           cancelledBy,
-          cancellationReason: reason || `Cancelled by ${cancelledBy.toLowerCase()}`,
+          cancellationReason: cancelReasonText,
+          refundPatient: true,
+          returnPatientBalance: true,
         },
       });
 
-      // 4. Patient notification
+      // Step F: Patient notification with clear full refund details
       const refundMsg =
-        refundToPatient > 0
-          ? `The consultation amount of ${refundToPatient} LYD has been refunded to your wallet. The service fee is non-refundable.`
-          : `Please note the service fee is non-refundable once an appointment is confirmed.`;
+        totalRefundToPatient > 0
+          ? `A full refund of ${totalRefundToPatient} LYD (${
+              refundConsultFee > 0
+                ? `Consultation: ${refundConsultFee} LYD + Service Fee: ${refundServiceFee} LYD`
+                : `Service Fee: ${refundServiceFee} LYD`
+            }) has been credited to your wallet.`
+          : ``;
 
-      const cancelReasonText = reason || `Cancelled by ${cancelledBy.toLowerCase()}`;
       await tx.patientNotification.create({
         data: {
           patientId: booking.patientId,
           bookingAppointmentId: booking.id,
           notificationType: "APPOINTMENT_CANCELLED",
-          title: "Appointment Cancelled",
+          title: "Appointment Cancelled & 100% Refunded",
           description: `Your appointment with Dr. ${
             booking.doctor?.user?.fullName || "Doctor"
           } on ${new Date(
@@ -951,12 +1164,72 @@ const cancelBooking = async (
         },
       });
 
+      // Step G: Clinic notification
+      if (cancelledBy !== "CLINIC") {
+        await tx.clinicNotification.create({
+          data: {
+            clinicId: booking.clinicId,
+            bookingAppointmentId: booking.id,
+            notificationType: "APPOINTMENT_CANCELLED",
+            title: "Appointment Cancelled",
+            description: `Appointment #${booking.serialNumber} for patient ${
+              booking.patient?.user?.fullName || "Patient"
+            } on ${new Date(
+              booking.consultDate
+            ).toLocaleDateString()} was cancelled. Reason: ${cancelReasonText}.`,
+          },
+        });
+      }
+
       return updated;
     });
 
-    await BookingSchedulerService.cancelBookingNotifications(appointmentId);
-    await BookingSchedulerService.cancelPendingBookingTimeout(appointmentId);
-    await BookingSchedulerService.cancelConfirmedBookingTimeout(appointmentId);
+    // Step H: Cancel BullMQ scheduled notification and timeout jobs
+    try {
+      await BookingSchedulerService.cancelBookingNotifications(appointmentId);
+      await BookingSchedulerService.cancelPendingBookingTimeout(appointmentId);
+      await BookingSchedulerService.cancelConfirmedBookingTimeout(appointmentId);
+    } catch (schedErr) {
+      console.error("Error cancelling scheduled jobs for cancelled booking:", schedErr);
+    }
+
+    // Step I: Broadcast real-time WebSocket event
+    try {
+      broadcastBookingUpdate({
+        bookingId: booking.id,
+        status: BookingStatus.CANCELLED,
+        clinicId: booking.clinicId,
+        doctorId: booking.doctorId,
+        patientId: booking.patientId,
+        patientUserId: patientUserId,
+        clinicUserId: clinicUserId,
+        reason: cancelReasonText,
+        serialNumber: booking.serialNumber,
+        consultDate: booking.consultDate,
+      });
+    } catch (wsErr) {
+      console.error("WS broadcast error:", wsErr);
+    }
+
+    // Step J: FCM push notification to patient (if cancelled by clinic/doctor/admin)
+    if (cancelledBy !== "PATIENT" && booking.patient?.user?.fcmToken) {
+      try {
+        await Notification.PatientNotification(
+          booking.id,
+          booking.patientId,
+          "APPOINTMENT_CANCELLED",
+          "Appointment Cancelled & 100% Refunded",
+          `Your appointment with Dr. ${
+            booking.doctor?.user?.fullName || "Doctor"
+          } on ${new Date(
+            booking.consultDate
+          ).toLocaleDateString()} has been cancelled. Reason: ${cancelReasonText}.`,
+          booking.patient.user.fcmToken
+        );
+      } catch (fcmErr) {
+        console.error("FCM error on cancellation:", fcmErr);
+      }
+    }
 
     return updatedBooking;
   }
@@ -973,8 +1246,12 @@ const completeBooking = async (appointmentId: string) => {
     data: { status: BookingStatus.COMPLETE },
   });
 
-  await BookingSchedulerService.cancelBookingNotifications(appointmentId);
-  await BookingSchedulerService.cancelConfirmedBookingTimeout(appointmentId);
+  try {
+    await BookingSchedulerService.cancelBookingNotifications(appointmentId);
+    await BookingSchedulerService.cancelConfirmedBookingTimeout(appointmentId);
+  } catch (schedErr) {
+    console.error("Error cancelling scheduled jobs for completed booking:", schedErr);
+  }
 
   await prisma.patientNotification.create({
     data: {

@@ -195,6 +195,15 @@ export const appointmentLifecycleWorker = new Worker<
           });
         }
 
+        // 3b. Unfreeze clinic hold in full (Section 6: "released in full on rejection or auto-reject")
+        const clinicHold = (appointment as any).clinicServiceFee || 0;
+        if (clinicHold > 0 && clinicUserId) {
+          await tx.user.update({
+            where: { id: clinicUserId },
+            data: { frozenWallet: { decrement: clinicHold } },
+          });
+        }
+
         // 4. Penalty for clinic: deduct from clinic wallet
         if (clinicPenalty > 0) {
           await tx.user.update({

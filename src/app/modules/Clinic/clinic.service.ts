@@ -636,26 +636,8 @@ const getManagerBookingHistory = async (
   filters: any,
   options: IPaginationOptions,
 ) => {
-  const userWithManager = await prisma.user.findUnique({
-    where: { id: userId },
-    include: {
-      manager: {
-        include: {
-          clinic: true,
-        },
-      },
-    },
-  });
-
-  const manager = userWithManager?.manager[0];
-  if (!manager || !manager.clinic) {
-    throw new ApiError(
-      httpStatus.NOT_FOUND,
-      "Clinic not found for this manager",
-    );
-  }
-
-  const clinicId = manager.clinicId;
+  const clinic = await getClinicByUserId(userId);
+  const clinicId = clinic.id;
 
   const { limit, page, skip } = paginationHelpers.calculatePagination(options);
   const { searchTerm, ...filterData } = filters;
@@ -799,21 +781,7 @@ const getManagerBookingHistory = async (
 };
 
 const getClinicManagerStats = async (userId: string) => {
-  const userWithManager = await prisma.user.findUnique({
-    where: { id: userId },
-    include: {
-      manager: {
-        include: {
-          clinic: true,
-        },
-      },
-    },
-  });
-
-  if (!userWithManager)
-    throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
-
-  const clinic = userWithManager.manager[0].clinic;
+  const clinic = await getClinicByUserId(userId);
 
   // 🌍 UTC HANDLING: Always use UTC for date boundaries to ensure consistent
   // statistics calculation regardless of server timezone
@@ -827,6 +795,7 @@ const getClinicManagerStats = async (userId: string) => {
     todayAppointment,
     pendingAppointment,
     completedAppointment,
+    noShowAppointment,
     confirmedAppointment,
     cancelledAppointment,
   ] = await Promise.all([
@@ -864,12 +833,14 @@ const getClinicManagerStats = async (userId: string) => {
     prisma.bookingAppointment.count({
       where: {
         clinicId: clinic.id,
-        status: {
-         in: [
-           BookingStatus.COMPLETE,
-           BookingStatus.NOT_SHOW,
-        ],
-       },
+        status: BookingStatus.COMPLETE,
+      },
+    }),
+    // No Show
+    prisma.bookingAppointment.count({
+      where: {
+        clinicId: clinic.id,
+        status: BookingStatus.NOT_SHOW,
       },
     }),
     // Confirmed
@@ -893,6 +864,7 @@ const getClinicManagerStats = async (userId: string) => {
     todayAppointment,
     pendingAppointment,
     completedAppointment,
+    noShowAppointment,
     confirmedAppointment,
     cancelledAppointment,
   };
@@ -1333,22 +1305,8 @@ const getClinicManagerDoctor = async (
 
   const { search, rating, consultFee, specialty } = filters;
 
-  const manager = await prisma.user.findUnique({
-    where: { id: userId },
-    include: {
-      manager: {
-        include: {
-          clinic: true,
-        },
-      },
-    },
-  });
-  if (!manager) throw new ApiError(httpStatus.NOT_FOUND, "Manager not found");
-
-  const clinicId = manager.manager[0].clinic.id;
-
-  const clinic = await prisma.clinic.findUnique({ where: { id: clinicId } });
-  if (!clinic) throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
+  const clinic = await getClinicByUserId(userId);
+  const clinicId = clinic.id;
 
   // 1️⃣ Build Prisma WHERE conditions
   const andConditions: Prisma.UserWhereInput[] = [
@@ -1841,7 +1799,7 @@ const addClinicManager = async (
   });
 };
 
-const getClinicByUserId = async (userId: string) => {
+async function getClinicByUserId(userId: string) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     include: {
@@ -1864,7 +1822,7 @@ const getClinicByUserId = async (userId: string) => {
   }
 
   throw new ApiError(httpStatus.NOT_FOUND, "Clinic profile not found for this user");
-};
+}
 
 const getClinicJoinRequests = async (userId: string) => {
   const clinic = await getClinicByUserId(userId);

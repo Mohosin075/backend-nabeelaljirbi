@@ -8,6 +8,7 @@ import { Notification } from "../Notification/notification.service";
 import { adminNotificationQueue } from "../../jobs";
 import { BookingSchedulerService } from "../../jobs/services/bookingScheduler.service";
 import { broadcastBookingUpdate } from "../../../helpars/socket/socketHandler";
+import { BookingService } from "../Booking/booking.service";
 
 
 
@@ -482,117 +483,24 @@ const suspendUserWithRefund = async (targetId: string, suspended: boolean, reaso
     });
 
     for (const apt of futureAppointments) {
-      const patientUserId = apt.patient?.userId;
-      const patientFee = apt.patientServiceFee || 0;
-      const dateStr = new Date(apt.consultDate).toLocaleDateString();
       const providerName = doctorId
         ? `Dr. ${apt.doctor?.user?.fullName || ''}`
         : `${apt.clinic?.clinicName || 'Clinic'}`;
 
-      await prisma.$transaction(async (tx) => {
-        // Update appointment status to CANCELLED and mark refunded
-        await tx.bookingAppointment.update({
-          where: { id: apt.id },
-          data: {
-            status: BookingStatus.CANCELLED,
-            refundPatient: true,
-            returnPatientBalance: true,
-          },
-        });
-
-        // 100% Full Refund to Patient
-        if (patientFee > 0 && patientUserId) {
-          // Increment patient wallet
-          await tx.user.update({
-            where: { id: patientUserId },
-            data: { wallet: { increment: patientFee } },
-          });
-
-          // Decrement admin wallet
-          if (adminUser) {
-            await tx.user.update({
-              where: { id: adminUser.id },
-              data: { wallet: { decrement: patientFee } },
-            });
-
-            // Admin refund record
-            await tx.topUp.create({
-              data: {
-                userId: adminUser.id,
-                amount: patientFee,
-                appointmentId: apt.id,
-                type: TopUpType.REFUND,
-              },
-            });
-          }
-
-          // Patient refund record
-          await tx.topUp.create({
-            data: {
-              userId: patientUserId,
-              amount: patientFee,
-              appointmentId: apt.id,
-              type: TopUpType.REFUND,
-            },
-          });
-
-          totalRefunded += patientFee;
-        }
-
-        // Also refund clinic fee if clinic was charged and not the suspended entity
-        if (apt.clinicServiceFee > 0 && apt.clinic?.userId) {
-          await tx.user.update({
-            where: { id: apt.clinic.userId },
-            data: { wallet: { increment: apt.clinicServiceFee } },
-          });
-
-          if (adminUser) {
-            await tx.user.update({
-              where: { id: adminUser.id },
-              data: { wallet: { decrement: apt.clinicServiceFee } },
-            });
-            await tx.topUp.create({
-              data: {
-                userId: adminUser.id,
-                amount: apt.clinicServiceFee,
-                appointmentId: apt.id,
-                type: TopUpType.REFUND,
-              },
-            });
-          }
-
-          await tx.topUp.create({
-            data: {
-              userId: apt.clinic.userId,
-              amount: apt.clinicServiceFee,
-              appointmentId: apt.id,
-              type: TopUpType.REFUND,
-            },
-          });
-        }
-
-        // Notify patient about cancellation and 100% full refund
-        await tx.patientNotification.create({
-          data: {
-            patientId: apt.patientId,
-            bookingAppointmentId: apt.id,
-            notificationType: "APPOINTMENT_CANCELLED",
-            title: "Appointment Cancelled & 100% Refunded",
-            description: `Your appointment with ${providerName} on ${dateStr} has been cancelled due to provider suspension. A full 100% refund of ${patientFee} LYD has been credited to your wallet balance.`,
-          },
-        });
-      });
-
-      // Cancel reminder notifications & timeout jobs in BullMQ
       try {
-        await BookingSchedulerService.cancelBookingNotifications(apt.id);
-        await BookingSchedulerService.cancelPendingBookingTimeout(apt.id);
-        await BookingSchedulerService.cancelConfirmedBookingTimeout(apt.id);
+        await BookingService.cancelBooking(
+          apt.id,
+          adminUser?.id,
+          "ADMIN",
+          `Cancelled due to provider suspension (${providerName})`
+        );
+        cancelledCount++;
       } catch (err) {
-        console.error(`Failed to cancel booking scheduler jobs for ${apt.id}:`, err);
+        console.error(
+          `Failed to cancel booking ${apt.id} during suspension:`,
+          err
+        );
       }
-
-      cancelledCount++;
     }
   }
 
@@ -841,51 +749,62 @@ const getClinicPlatformSubscription = async (filters: any, options: IPaginationO
 }
 
 const SetServiceFree = async (userId: string, serviceFree: number) => {
+  let clinicUserId: string | undefined;
 
-  const user = await prisma.user.findUnique({
-    where: {
-      id: userId
-    }
+  const targetUser = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true },
   });
 
-  if (!user) {
-    throw new ApiError(httpStatus.NOT_FOUND, 'User not found');
+  if (targetUser) {
+    clinicUserId = targetUser.id;
+  } else {
+    const clinic = await prisma.clinic.findUnique({
+      where: { id: userId },
+      select: { userId: true },
+    });
+    if (clinic) {
+      clinicUserId = clinic.userId;
+    }
   }
 
+  if (!clinicUserId) {
+    throw new ApiError(httpStatus.NOT_FOUND, "User or Clinic not found");
+  }
+
+  const feeValue = Number(serviceFree) || 0;
+
   const clinic = await prisma.$transaction(async (tx) => {
-    if (serviceFree > 0) {
+    if (feeValue > 0) {
       await tx.clinic.update({
-        where: {
-          userId: userId
-        },
+        where: { userId: clinicUserId },
         data: {
-          trial: false
-        }
+          trial: false,
+          serviceFeePercentage: feeValue,
+        },
       });
     } else {
       await tx.clinic.update({
-        where: {
-          userId: userId
-        },
+        where: { userId: clinicUserId },
         data: {
-          trial: true
-        }
+          trial: true,
+          serviceFeePercentage: 0,
+        },
       });
     }
 
     const result = await tx.user.update({
-      where: {
-        id: userId
-      },
+      where: { id: clinicUserId },
       data: {
-        serviceFree: serviceFree
-      }
+        serviceFree: feeValue,
+      },
     });
 
     return result;
-  })
+  });
+
   return clinic;
-}
+};
 
 // patient notification from admin
 const createPatientNotification = async (payload: { userId: string[], title: string, description: string }) => {
