@@ -23,6 +23,7 @@ ALTER TABLE "booking_appointments" ADD COLUMN IF NOT EXISTS "approximateEstimate
 ALTER TABLE "booking_appointments" ADD COLUMN IF NOT EXISTS "rejectionReason" TEXT;
 ALTER TABLE "booking_appointments" ADD COLUMN IF NOT EXISTS "cancelledBy" TEXT;
 ALTER TABLE "booking_appointments" ADD COLUMN IF NOT EXISTS "cancellationReason" TEXT;
+ALTER TABLE "booking_appointments" ADD COLUMN IF NOT EXISTS "noShowReason" TEXT;
 
 -- Index for workingSlotId on booking_appointments
 CREATE INDEX IF NOT EXISTS "booking_appointments_workingSlotId_idx" ON "booking_appointments"("workingSlotId");
