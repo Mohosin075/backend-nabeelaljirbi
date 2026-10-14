@@ -1725,11 +1725,60 @@ const getFinancialLedger = async (filters: any, options: IPaginationOptions) => 
 };
 
 // 6. Settlements Management
-const getSettlements = async (filters: any, options: IPaginationOptions) => {
+const getSettlements = async (filters: any, options: IPaginationOptions, currentUser?: any) => {
   const { limit, page, skip, sortBy, sortOrder } = paginationHelpers.calculatePagination(options);
   const { searchTerm, status, partyType, clinicId, doctorId } = filters;
 
   const andConditions: Prisma.SettlementWhereInput[] = [];
+
+  // Scoping for Clinic & Doctor
+  if (currentUser?.role === "CLINIC" || currentUser?.role === "MANAGER") {
+    let userClinicId = currentUser.clinic?.id;
+    if (!userClinicId && currentUser.manager && currentUser.manager.length > 0) {
+      userClinicId = currentUser.manager[0].clinicId;
+    }
+    if (!userClinicId) {
+      const foundClinic = await prisma.clinic.findFirst({
+        where: { userId: currentUser.id },
+        select: { id: true },
+      });
+      userClinicId = foundClinic?.id;
+    }
+
+    if (userClinicId) {
+      andConditions.push({ clinicId: userClinicId });
+    } else {
+      return {
+        meta: { page, limit, total: 0 },
+        data: [],
+      };
+    }
+  } else if (currentUser?.role === "DOCTOR") {
+    let userDoctorId = currentUser.doctor?.id;
+    if (!userDoctorId) {
+      const foundDoctor = await prisma.doctor.findFirst({
+        where: { userId: currentUser.id },
+        select: { id: true },
+      });
+      userDoctorId = foundDoctor?.id;
+    }
+    if (userDoctorId) {
+      andConditions.push({ doctorId: userDoctorId });
+    } else {
+      return {
+        meta: { page, limit, total: 0 },
+        data: [],
+      };
+    }
+  } else {
+    // Admin role filtering
+    if (clinicId) {
+      andConditions.push({ clinicId });
+    }
+    if (doctorId) {
+      andConditions.push({ doctorId });
+    }
+  }
 
   if (searchTerm) {
     andConditions.push({
@@ -1748,14 +1797,6 @@ const getSettlements = async (filters: any, options: IPaginationOptions) => {
 
   if (partyType) {
     andConditions.push({ partyType });
-  }
-
-  if (clinicId) {
-    andConditions.push({ clinicId });
-  }
-
-  if (doctorId) {
-    andConditions.push({ doctorId });
   }
 
   const whereConditions: Prisma.SettlementWhereInput =
@@ -1810,17 +1851,91 @@ const getSettlements = async (filters: any, options: IPaginationOptions) => {
     }),
   ]);
 
+  const mappedResult = result.map((item) => ({
+    ...item,
+    relatedTransactions: {
+      type: "PAYOUT_WITHDRAWAL",
+      targetReference: item.reference || `REF-${item.settlementNumber}`,
+      payoutChannel: "BANK_TRANSFER",
+      status: item.status,
+    },
+  }));
+
   return {
     meta: { page, limit, total },
-    data: result,
+    data: mappedResult,
   };
 };
 
 const createSettlement = async (payload: any, currentParty?: any) => {
   const { partyType, clinicId, doctorId, amount, notes } = payload;
 
-  if (!amount || Number(amount) <= 0) {
+  const parsedAmount = Number(amount);
+  if (!parsedAmount || isNaN(parsedAmount) || parsedAmount <= 0) {
     throw new ApiError(httpStatus.BAD_REQUEST, "Valid settlement amount is required");
+  }
+
+  let finalPartyType = partyType || "CLINIC";
+  let targetClinicId = clinicId || null;
+  let targetDoctorId = doctorId || null;
+
+  if (currentParty?.role === "CLINIC" || currentParty?.role === "MANAGER") {
+    finalPartyType = "CLINIC";
+    let foundClinic = currentParty.clinic;
+    if (!foundClinic && currentParty.manager && currentParty.manager.length > 0) {
+      foundClinic = await prisma.clinic.findUnique({
+        where: { id: currentParty.manager[0].clinicId },
+        include: { user: true },
+      });
+    }
+    if (!foundClinic) {
+      foundClinic = await prisma.clinic.findFirst({
+        where: { userId: currentParty.id },
+        include: { user: true },
+      });
+    }
+    if (!foundClinic) {
+      throw new ApiError(httpStatus.BAD_REQUEST, "Clinic profile not found for this account");
+    }
+
+    targetClinicId = foundClinic.id;
+    targetDoctorId = null;
+    const targetUserId = foundClinic.userId || foundClinic.user?.id || currentParty.id;
+
+    // Check available balance and pending settlements
+    const clinicOwner = await prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { wallet: true },
+    });
+    const currentWallet = clinicOwner?.wallet || 0;
+
+    const pendingSum = await prisma.settlement.aggregate({
+      where: {
+        clinicId: targetClinicId,
+        status: { in: ["PENDING", "UNDER_REVIEW", "APPROVED"] },
+      },
+      _sum: { amount: true },
+    });
+    const pendingAmount = pendingSum._sum.amount || 0;
+    const availableForPayout = Math.max(0, currentWallet - pendingAmount);
+
+    if (parsedAmount > availableForPayout) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        `Requested settlement amount (${parsedAmount.toFixed(2)} LYD) exceeds available balance (${availableForPayout.toFixed(2)} LYD).`
+      );
+    }
+  } else if (currentParty?.role === "DOCTOR") {
+    throw new ApiError(
+      httpStatus.FORBIDDEN,
+      "Doctor settlements are reserved for platform-supervised services in Phase 2."
+    );
+  } else if (currentParty?.role === "ADMIN") {
+    if (targetClinicId) {
+      finalPartyType = "CLINIC";
+    } else if (targetDoctorId) {
+      finalPartyType = "DOCTOR";
+    }
   }
 
   const settlementNumber = `SET-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -1828,10 +1943,10 @@ const createSettlement = async (payload: any, currentParty?: any) => {
   const newSettlement = await prisma.settlement.create({
     data: {
       settlementNumber,
-      partyType: partyType || (clinicId ? "CLINIC" : "DOCTOR"),
-      clinicId: clinicId || null,
-      doctorId: doctorId || null,
-      amount: Number(amount),
+      partyType: finalPartyType,
+      clinicId: targetClinicId,
+      doctorId: targetDoctorId,
+      amount: parsedAmount,
       status: "PENDING",
       notes: notes || null,
     },
@@ -1849,7 +1964,10 @@ const updateSettlementStatus = async (settlementId: string, payload: any, curren
 
   const settlement = await prisma.settlement.findUnique({
     where: { id: settlementId },
-    include: { clinic: { include: { user: true } } },
+    include: {
+      clinic: { include: { user: true } },
+      doctor: { include: { user: true } },
+    },
   });
 
   if (!settlement) {
@@ -1872,6 +1990,51 @@ const updateSettlementStatus = async (settlementId: string, payload: any, curren
     updateData.completedAt = new Date();
     if (!settlement.processedAt) {
       updateData.processedAt = new Date();
+    }
+
+    // Safely deduct wallet balance and log a WITHDRAW TopUp record
+    if (settlement.status !== "COMPLETED") {
+      const targetUserId =
+        settlement.clinic?.userId ||
+        settlement.clinic?.user?.id ||
+        settlement.doctor?.userId ||
+        settlement.doctor?.user?.id;
+
+      if (targetUserId) {
+        await prisma.$transaction([
+          prisma.user.update({
+            where: { id: targetUserId },
+            data: {
+              wallet: { decrement: settlement.amount },
+            },
+          }),
+          prisma.topUp.create({
+            data: {
+              userId: targetUserId,
+              amount: settlement.amount,
+              type: "WITHDRAW",
+            },
+          }),
+        ]);
+      }
+    }
+  }
+
+  // If reverting from COMPLETED back to another status, safely restore balance
+  if (settlement.status === "COMPLETED" && status !== "COMPLETED") {
+    const targetUserId =
+      settlement.clinic?.userId ||
+      settlement.clinic?.user?.id ||
+      settlement.doctor?.userId ||
+      settlement.doctor?.user?.id;
+
+    if (targetUserId) {
+      await prisma.user.update({
+        where: { id: targetUserId },
+        data: {
+          wallet: { increment: settlement.amount },
+        },
+      });
     }
   }
 
@@ -1898,6 +2061,7 @@ const updateSettlementStatus = async (settlementId: string, payload: any, curren
       oldStatus: settlement.status,
       newStatus: status,
       reference,
+      receiptUrl,
     },
   });
 

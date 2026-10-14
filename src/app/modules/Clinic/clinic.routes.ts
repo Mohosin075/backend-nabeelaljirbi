@@ -3,6 +3,7 @@ import auth from "../../middlewares/auth";
 import validateRequest from "../../middlewares/validateRequest";
 import { UserRole } from "@prisma/client";
 import { ClinicController } from "./clinic.controller";
+import { AdminController } from "../Admin/admin.controller";
 import { clinicValidation } from "./clinic.validation";
 import { s3Uploader } from "../../../helpars/s3Bucket/fileUploadToS3";
 
@@ -198,6 +199,18 @@ router.get(
   "/financial-summary",
   auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   ClinicController.getClinicFinancialSummary
+);
+
+router.get(
+  "/settlements",
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  AdminController.getSettlements
+);
+
+router.post(
+  "/settlements",
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  AdminController.createSettlement
 );
 
 export const ClinicRoutes = router;

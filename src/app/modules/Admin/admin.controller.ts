@@ -383,7 +383,7 @@ const getSettlements = catchAsync(async (req: Request, res: Response) => {
   const options = pick(req.query, paginationFields);
   const filters = pick(req.query, ["searchTerm", "status", "partyType", "clinicId", "doctorId"]);
 
-  const result = await AdminService.getSettlements(filters, options);
+  const result = await AdminService.getSettlements(filters, options, (req as any).user);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
