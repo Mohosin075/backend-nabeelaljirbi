@@ -8,61 +8,70 @@ import prisma from "../../../shared/prisma";
 import openai from "../../../shared/openai";
 import { getConnectedUsers } from "../../../helpars/socket/socketHandler";
 
-const today = new Date();
-
-// Get the start of today (00:00:00)
-const startOfToday = new Date(
-  today.getFullYear(),
-  today.getMonth(),
-  today.getDate(),
-);
-
-// Get the start of tomorrow (00:00:00)
-const startOfTomorrow = new Date(
-  today.getFullYear(),
-  today.getMonth(),
-  today.getDate() + 1,
-);
-
 const createChat = async (userId: string, question: string) => {
-  const todayChat = await prisma.chat.count({
+  const chatConfig = await prisma.allowAiChat.findFirst();
+  const isEnable = chatConfig?.isEnable ?? true;
+  const limit = chatConfig?.limit ?? 5;
+
+  const senderPresence = getConnectedUsers().get(userId);
+
+  // Check if AI chat is enabled by Admin
+  if (!isEnable) {
+    if (senderPresence && senderPresence.ws) {
+      senderPresence.ws.send(
+        JSON.stringify({
+          type: "chatDisabled",
+          message: "AI Assistant is currently disabled by administrator.",
+          createdAt: new Date().toISOString(),
+        })
+      );
+    }
+    return "AI Assistant is currently disabled";
+  }
+
+  // Rolling 24-hour window tied to real clock time (Section 13)
+  const rolling24HoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const rolling24hChatCount = await prisma.chat.count({
     where: {
       userId: userId,
       createdAt: {
-        gte: startOfToday,
-        lt: startOfTomorrow,
+        gte: rolling24HoursAgo,
       },
     },
   });
 
-  const chatLimit = await prisma.allowAiChat.findFirst();
-
   console.log(
-    "🚀 ~ file: chat.service.ts:48 ~ createChat ~ todayChat:",
-    todayChat,
+    `🤖 User ${userId} rolling 24h count: ${rolling24hChatCount} / ${limit}`
   );
 
-  console.log("Today Chat", todayChat);
-  console.log("Chat limit", chatLimit);
+  if (rolling24hChatCount >= limit) {
+    // Find oldest message in current window to calculate next available reset
+    const oldestInWindow = await prisma.chat.findFirst({
+      where: {
+        userId: userId,
+        createdAt: { gte: rolling24HoursAgo },
+      },
+      orderBy: { createdAt: "asc" },
+    });
 
-  if (chatLimit) {
-    if (todayChat >= chatLimit.limit) {
-      // throw new Error("You have reached the limit of 3 chats per day.");
+    const nextAvailableAt = oldestInWindow
+      ? new Date(oldestInWindow.createdAt.getTime() + 24 * 60 * 60 * 1000).toISOString()
+      : new Date(Date.now() + 60 * 60 * 1000).toISOString();
 
-      const senderPresence = getConnectedUsers().get(userId);
-
-      if (senderPresence && senderPresence.ws) {
-        senderPresence.ws.send(
-          JSON.stringify({
-            type: "limitExceeded",
-            message: `You have reached the limit of ${chatLimit.limit} chats per day.`,
-            createdAt: new Date().toISOString(),
-          }),
-        );
-      }
-      
-      return "You have reached the limit chats";
+    if (senderPresence && senderPresence.ws) {
+      senderPresence.ws.send(
+        JSON.stringify({
+          type: "limitExceeded",
+          message: `You have reached your limit of ${limit} free messages per rolling 24-hour window.`,
+          limit,
+          usedCount: rolling24hChatCount,
+          remainingCount: 0,
+          nextAvailableAt,
+          createdAt: new Date().toISOString(),
+        })
+      );
     }
+    return "You have reached the rolling 24-hour limit";
   }
 
   try {
@@ -230,6 +239,21 @@ const createChat = async (userId: string, question: string) => {
       chatMessage.createdAt.toISOString(),
     );
 
+    // 5.1️⃣ Send updated remaining count to user (Section 13)
+    const newUsedCount = rolling24hChatCount + 1;
+    const newRemainingCount = Math.max(0, limit - newUsedCount);
+    if (senderPresence && senderPresence.ws) {
+      senderPresence.ws.send(
+        JSON.stringify({
+          type: "userUsageConfig",
+          isEnable,
+          limit,
+          usedCount: newUsedCount,
+          remainingCount: newRemainingCount,
+        })
+      );
+    }
+
     // 6️⃣ Return response
     return {
       type: "messageResponse",
@@ -237,6 +261,8 @@ const createChat = async (userId: string, question: string) => {
       answer: chatMessage.answer,
       doctor: recommendDoctor,
       createdAt: chatMessage.createdAt.toISOString(),
+      remainingCount: newRemainingCount,
+      limit,
     };
   } catch (error: any) {
     console.error("❌ Error in createChat:", error);
@@ -247,6 +273,31 @@ const createChat = async (userId: string, question: string) => {
   }
 };
 
+const getUserUsage = async (userId: string) => {
+  const rolling24HoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const [rolling24hChatCount, chatConfig] = await Promise.all([
+    prisma.chat.count({
+      where: {
+        userId,
+        createdAt: { gte: rolling24HoursAgo },
+      },
+    }),
+    prisma.allowAiChat.findFirst(),
+  ]);
+
+  const limit = chatConfig?.limit ?? 5;
+  const isEnable = chatConfig?.isEnable ?? true;
+  const remainingCount = Math.max(0, limit - rolling24hChatCount);
+
+  return {
+    isEnable,
+    limit,
+    usedCount: rolling24hChatCount,
+    remainingCount,
+  };
+};
+
 export const chatService = {
   createChat,
+  getUserUsage,
 };

@@ -64,6 +64,21 @@ export function initializeWebSocket(server: HTTPServer) {
         })
       );
 
+      // Send real-time rolling 24h usage status (Section 13)
+      chatService.getUserUsage(userId).then((usage) => {
+        ws.send(
+          JSON.stringify({
+            type: "userUsageConfig",
+            isEnable: usage.isEnable,
+            limit: usage.limit,
+            usedCount: usage.usedCount,
+            remainingCount: usage.remainingCount,
+          })
+        );
+      }).catch((err) => {
+        console.error("Error fetching user AI usage on connect:", err);
+      });
+
       // ---------------- HANDLE INCOMING MESSAGES ----------------
       ws.on("message", async (msg) => {
         try {
@@ -104,7 +119,7 @@ export function initializeWebSocket(server: HTTPServer) {
             const { page = 1, limit = 20 } = data;
             const skip = (page - 1) * limit;
 
-            const [messages, totalCount] = await Promise.all([
+            const [messages, totalCount, userUsage] = await Promise.all([
               prisma.chat.findMany({
                 where: { userId: userId },
                 orderBy: { createdAt: "desc" },
@@ -113,6 +128,7 @@ export function initializeWebSocket(server: HTTPServer) {
                 include: {
                   doctor: {
                     select: {
+                      id: true,
                       speciality: true,
                       experience: true,
                       consultFee: true,
@@ -130,6 +146,7 @@ export function initializeWebSocket(server: HTTPServer) {
               prisma.chat.count({
                 where: { userId: userId },
               }),
+              chatService.getUserUsage(userId),
             ]);
 
             ws.send(
@@ -139,7 +156,25 @@ export function initializeWebSocket(server: HTTPServer) {
                 limit,
                 totalCount,
                 totalPages: Math.ceil(totalCount / limit),
+                remainingCount: userUsage.remainingCount,
+                usedCount: userUsage.usedCount,
+                chatLimit: userUsage.limit,
+                isEnable: userUsage.isEnable,
                 messages: messages.reverse(), // chronological order
+              })
+            );
+          }
+
+          // ---------------- GET USER USAGE & CONFIG ----------------
+          if (data.type === "getUserUsage" || data.type === "getConfig") {
+            const usage = await chatService.getUserUsage(userId);
+            ws.send(
+              JSON.stringify({
+                type: "userUsageConfig",
+                isEnable: usage.isEnable,
+                limit: usage.limit,
+                usedCount: usage.usedCount,
+                remainingCount: usage.remainingCount,
               })
             );
           }

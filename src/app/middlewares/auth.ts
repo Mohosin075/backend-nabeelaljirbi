@@ -16,10 +16,14 @@ const auth = (...roles: string[]) => {
     next: NextFunction
   ) => {
     try {
-      const token = req.headers.authorization;
+      let token = req.headers.authorization;
 
       if (!token) {
         throw new ApiError(httpStatus.UNAUTHORIZED, "You are not authorized!");
+      }
+
+      if (token.startsWith("Bearer ") || token.startsWith("bearer ")) {
+        token = token.slice(7).trim();
       }
 
       const verifiedUser = jwtHelpers.verifyToken(

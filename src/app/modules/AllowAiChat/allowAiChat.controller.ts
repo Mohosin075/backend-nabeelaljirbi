@@ -26,7 +26,30 @@ const getAllowAiChats = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const getMyAiStatus = catchAsync(async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id;
+  const result = await AllowAiChatService.getMyAiStatus(userId);
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "User AI usage status retrieved successfully",
+    data: result,
+  });
+});
+
+const getAdminAiStats = catchAsync(async (req: Request, res: Response) => {
+  const result = await AllowAiChatService.getAdminAiStats();
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Admin AI usage statistics retrieved successfully",
+    data: result,
+  });
+});
+
 export const AllowAiChatController = {
   createAllowAiChat,
   getAllowAiChats,
+  getMyAiStatus,
+  getAdminAiStats,
 };

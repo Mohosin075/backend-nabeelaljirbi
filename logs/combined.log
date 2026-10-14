@@ -4008,3 +4008,13 @@
 {"level":"info","message":"Incoming request: GET /api/v1/clinic/manager/doctors","service":"default-service-name","timestamp":"2026-10-14 16:03:23"}
 {"level":"info","message":"Incoming request: GET /api/v1/clinic/reconciliation-reports?page=1&limit=15&clinicId=cmtymk5pp0006cplgldancvqi","service":"default-service-name","timestamp":"2026-10-14 16:03:35"}
 {"level":"info","message":"Incoming request: GET /api/v1/clinic/reconciliation-reports?page=1&limit=15","service":"default-service-name","timestamp":"2026-10-14 16:03:38"}
+{"level":"info","message":"Incoming request: GET /api/v1/clinic/manager/doctors","service":"default-service-name","timestamp":"2026-10-14 16:27:02"}
+{"level":"info","message":"Incoming request: GET /api/v1/specialist?page=1&limit=100","service":"default-service-name","timestamp":"2026-10-14 16:27:02"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/get-clinic?page=1&limit=100","service":"default-service-name","timestamp":"2026-10-14 16:27:02"}
+{"level":"info","message":"Incoming request: GET /api/v1/clinic/reconciliation-reports?page=1&limit=15","service":"default-service-name","timestamp":"2026-10-14 16:27:02"}
+{"level":"info","message":"Incoming request: GET /api/v1/specialist?page=1&limit=100","service":"default-service-name","timestamp":"2026-10-14 16:27:02"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/get-clinic?page=1&limit=100","service":"default-service-name","timestamp":"2026-10-14 16:27:02"}
+{"level":"info","message":"Incoming request: GET /api/v1/clinic/reconciliation-reports?page=1&limit=15","service":"default-service-name","timestamp":"2026-10-14 16:27:02"}
+{"level":"info","message":"Incoming request: GET /api/v1/clinic/manager/doctors","service":"default-service-name","timestamp":"2026-10-14 16:27:02"}
+{"level":"info","message":"Incoming request: GET /api/v1/allow-ai-chat/admin-stats","service":"default-service-name","timestamp":"2026-10-14 16:31:19"}
+{"level":"info","message":"Incoming request: GET /api/v1/allow-ai-chat/my-status","service":"default-service-name","timestamp":"2026-10-14 16:31:24"}

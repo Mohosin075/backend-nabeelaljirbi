@@ -13,6 +13,12 @@ router.post(
   adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
   AllowAiChatController.createAllowAiChat
 );
+router.get("/my-status", auth(), AllowAiChatController.getMyAiStatus);
+router.get(
+  "/admin-stats",
+  auth(UserRole.ADMIN),
+  AllowAiChatController.getAdminAiStats
+);
 router.get("/", AllowAiChatController.getAllowAiChats);
 
 export const AllowAiChatRoutes = router;
