@@ -65,6 +65,12 @@ router.get(
   adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
   AdminController.getPlatformFinancialOverview
 );
+router.get(
+  "/financial-ledger",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.OPERATIONS, AdminTier.READ_ONLY),
+  AdminController.getFinancialLedger
+);
 
 // Subscriptions
 router.get(

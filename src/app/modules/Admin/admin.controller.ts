@@ -358,6 +358,26 @@ const getPlatformFinancialOverview = catchAsync(async (req: Request, res: Respon
   });
 });
 
+// Section 10: Traceable Financial Ledger
+const getFinancialLedger = catchAsync(async (req: Request, res: Response) => {
+  const options = pick(req.query, paginationFields);
+  const filters = pick(req.query, ["searchTerm", "category", "type", "startDate", "endDate"]);
+
+  const result = await AdminService.getFinancialLedger(filters, options);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Financial ledger retrieved successfully",
+    meta: result.meta,
+    data: {
+      summary: result.summary,
+      transactions: result.data,
+      meta: result.meta,
+    },
+  });
+});
+
 // Section 9: Settlements
 const getSettlements = catchAsync(async (req: Request, res: Response) => {
   const options = pick(req.query, paginationFields);
@@ -480,6 +500,7 @@ export const AdminController = {
   getBookingSettings,
   updateBookingSettings,
   getPlatformFinancialOverview,
+  getFinancialLedger,
   getSettlements,
   createSettlement,
   updateSettlementStatus,

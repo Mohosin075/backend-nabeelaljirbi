@@ -1451,6 +1451,279 @@ const getPlatformFinancialOverview = async () => {
   };
 };
 
+// Section 10: Dedicated Traceable Financial Ledger (10 Fields & 7 Distinct Categories)
+const getFinancialLedger = async (filters: any, options: IPaginationOptions) => {
+  const { limit, page, skip } = paginationHelpers.calculatePagination(options);
+  const { searchTerm, category, type, startDate, endDate } = filters;
+
+  const targetCategory = (category || type || "ALL").toUpperCase();
+
+  const dateFilter: any = {};
+  if (startDate) dateFilter.gte = new Date(startDate);
+  if (endDate) {
+    const end = new Date(endDate);
+    if (typeof endDate === "string" && !endDate.includes("T")) {
+      end.setHours(23, 59, 59, 999);
+    }
+    dateFilter.lte = end;
+  }
+  const hasDateFilter = Object.keys(dateFilter).length > 0;
+
+  const [topUps, adminTransactions, settlements, auditLogs, bookings] = await Promise.all([
+    prisma.topUp.findMany({
+      where: hasDateFilter ? { createdAt: dateFilter } : undefined,
+      include: {
+        user: true,
+        prepaidCard: true,
+        appointment: {
+          include: {
+            clinic: true,
+            doctor: { include: { user: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.adminTransaction.findMany({
+      where: hasDateFilter ? { createdAt: dateFilter } : undefined,
+      include: {
+        user: true,
+        clinic: true,
+        appointment: {
+          include: {
+            clinic: true,
+            doctor: { include: { user: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.settlement.findMany({
+      where: hasDateFilter ? { createdAt: dateFilter } : undefined,
+      include: {
+        clinic: true,
+        doctor: { include: { user: true } },
+        processedBy: true,
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.adminAuditLog.findMany({
+      where: {
+        action: "WALLET_BALANCE_UPDATED",
+        ...(hasDateFilter ? { createdAt: dateFilter } : {}),
+      },
+      include: { admin: true },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.bookingAppointment.findMany({
+      where: {
+        status: { in: [BookingStatus.CONFIRMED, BookingStatus.COMPLETE, BookingStatus.NOT_SHOW] },
+        OR: [
+          { serviceFeeAmount: { gt: 0 } },
+          { patientServiceFee: { gt: 0 } },
+          { clinicServiceFee: { gt: 0 } },
+        ],
+        ...(hasDateFilter ? { createdAt: dateFilter } : {}),
+      },
+      include: {
+        clinic: true,
+        doctor: { include: { user: true } },
+        patient: { include: { user: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+  ]);
+
+  const allEntries: any[] = [];
+
+  // 1. TopUps mapping
+  topUps.forEach((t) => {
+    let cat = "WALLET_TRANSACTION";
+    if (t.type === "REFERALL") cat = "REFERRAL";
+    else if (t.type === "REFUND" || t.type === "CANCEL") cat = "REFUND";
+    else if (t.type === "PENALTY") cat = "ADJUSTMENT";
+    else if (t.cardNumber || t.type === "RECHARGE") cat = "PREPAID_CARD";
+    else if (t.type === "BOOKING") cat = "WALLET_TRANSACTION";
+
+    allEntries.push({
+      id: t.id,
+      transactionId: `TX-${t.id.slice(-8).toUpperCase()}`,
+      bookingId: t.appointmentId || null,
+      bookingNumber: t.appointment?.serialNumber || null,
+      userName: t.user?.fullName || t.user?.phoneNumber || "User",
+      userPhone: t.user?.phoneNumber || "—",
+      userRole: t.user?.role || "PATIENT",
+      clinicName: t.appointment?.clinic?.clinicName || null,
+      doctorName: t.appointment?.doctor?.user?.fullName || null,
+      amount: t.amount,
+      type: cat,
+      status: "COMPLETED",
+      date: t.createdAt.toISOString(),
+      reference: t.cardNumber
+        ? `Card #${t.cardNumber}`
+        : t.appointment
+        ? `Booking #${t.appointment.serialNumber}`
+        : `Wallet ${t.type}`,
+    });
+  });
+
+  // 2. AdminTransactions mapping (Service Fee)
+  adminTransactions.forEach((a) => {
+    allEntries.push({
+      id: a.id,
+      transactionId: `FEE-${a.id.slice(-8).toUpperCase()}`,
+      bookingId: a.appointmentId || null,
+      bookingNumber: a.appointment?.serialNumber || null,
+      userName: a.user?.fullName || a.user?.phoneNumber || "Patient",
+      userPhone: a.user?.phoneNumber || "—",
+      userRole: a.user?.role || "PATIENT",
+      clinicName: a.clinic?.fullName || a.appointment?.clinic?.clinicName || null,
+      doctorName: a.appointment?.doctor?.user?.fullName || null,
+      amount: a.patientServiceFee + a.clinicServiceFee,
+      type: "SERVICE_FEE",
+      status: "COMPLETED",
+      date: a.createdAt.toISOString(),
+      reference: `Platform Fee (Patient: ${a.patientServiceFee} LYD, Clinic: ${a.clinicServiceFee} LYD)`,
+    });
+  });
+
+  // 3. Settlements mapping (Clinic Payables)
+  settlements.forEach((s) => {
+    allEntries.push({
+      id: s.id,
+      transactionId: s.settlementNumber || `SET-${s.id.slice(-8).toUpperCase()}`,
+      bookingId: null,
+      bookingNumber: null,
+      userName: s.clinic?.clinicName || "Clinic",
+      userPhone: s.clinic?.managerPhone || "—",
+      userRole: s.partyType || "CLINIC",
+      clinicName: s.clinic?.clinicName || null,
+      doctorName: s.doctor?.user?.fullName || null,
+      amount: s.amount,
+      type: "CLINIC_PAYABLE",
+      status: s.status,
+      date: s.createdAt.toISOString(),
+      reference: s.reference || s.receiptUrl || "Settlement Payout",
+    });
+  });
+
+  // 4. AuditLogs mapping (Adjustments)
+  auditLogs.forEach((l) => {
+    const details = l.details as any;
+    const diff = details?.diff ?? details?.amount ?? 0;
+    allEntries.push({
+      id: l.id,
+      transactionId: `ADJ-${l.id.slice(-8).toUpperCase()}`,
+      bookingId: null,
+      bookingNumber: null,
+      userName: details?.targetUserId
+        ? `User (${String(details.targetUserId).slice(-6)})`
+        : "User",
+      userPhone: "—",
+      userRole: "ADJUSTMENT",
+      clinicName: null,
+      doctorName: null,
+      amount: Math.abs(diff),
+      type: "ADJUSTMENT",
+      status: "COMPLETED",
+      date: l.createdAt.toISOString(),
+      reference: `Admin ${l.adminName || "Admin"} adjusted: ${diff > 0 ? "+" : ""}${diff} LYD`,
+    });
+  });
+
+  // 5. Bookings Platform Revenue (avoid duplicating AdminTransactions)
+  const existingApptIds = new Set(adminTransactions.map((a) => a.appointmentId));
+  bookings.forEach((b) => {
+    if (!existingApptIds.has(b.id)) {
+      allEntries.push({
+        id: `rev-${b.id}`,
+        transactionId: `REV-${b.id.slice(-8).toUpperCase()}`,
+        bookingId: b.id,
+        bookingNumber: b.serialNumber,
+        userName: b.patient?.user?.fullName || b.patient?.user?.phoneNumber || "Patient",
+        userPhone: b.patient?.user?.phoneNumber || "—",
+        userRole: "PATIENT",
+        clinicName: b.clinic?.clinicName || null,
+        doctorName: b.doctor?.user?.fullName || null,
+        amount: b.serviceFeeAmount || (b.patientServiceFee + b.clinicServiceFee) || 0,
+        type: "PLATFORM_REVENUE",
+        status: "COMPLETED",
+        date: b.createdAt.toISOString(),
+        reference: `Platform Fee from Booking #${b.serialNumber}`,
+      });
+    }
+  });
+
+  // Sort by date descending
+  allEntries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  // Filter by category
+  let filtered = allEntries;
+  if (targetCategory && targetCategory !== "ALL") {
+    filtered = filtered.filter((item) => item.type === targetCategory);
+  }
+
+  // Filter by searchTerm
+  if (searchTerm && searchTerm.trim()) {
+    const q = searchTerm.toLowerCase().trim();
+    filtered = filtered.filter(
+      (item) =>
+        (item.transactionId && item.transactionId.toLowerCase().includes(q)) ||
+        (item.bookingId && item.bookingId.toLowerCase().includes(q)) ||
+        (item.bookingNumber && String(item.bookingNumber).includes(q)) ||
+        (item.userName && item.userName.toLowerCase().includes(q)) ||
+        (item.userPhone && item.userPhone.toLowerCase().includes(q)) ||
+        (item.clinicName && item.clinicName.toLowerCase().includes(q)) ||
+        (item.doctorName && item.doctorName.toLowerCase().includes(q)) ||
+        (item.reference && item.reference.toLowerCase().includes(q)) ||
+        (item.type && item.type.toLowerCase().includes(q))
+    );
+  }
+
+  const summary = {
+    PLATFORM_REVENUE: allEntries
+      .filter((e) => e.type === "PLATFORM_REVENUE")
+      .reduce((sum, e) => sum + e.amount, 0),
+    SERVICE_FEE: allEntries
+      .filter((e) => e.type === "SERVICE_FEE")
+      .reduce((sum, e) => sum + e.amount, 0),
+    WALLET_TRANSACTION: allEntries
+      .filter((e) => e.type === "WALLET_TRANSACTION")
+      .reduce((sum, e) => sum + e.amount, 0),
+    REFUND: allEntries
+      .filter((e) => e.type === "REFUND")
+      .reduce((sum, e) => sum + e.amount, 0),
+    PREPAID_CARD: allEntries
+      .filter((e) => e.type === "PREPAID_CARD")
+      .reduce((sum, e) => sum + e.amount, 0),
+    ADJUSTMENT: allEntries
+      .filter((e) => e.type === "ADJUSTMENT")
+      .reduce((sum, e) => sum + e.amount, 0),
+    CLINIC_PAYABLE: allEntries
+      .filter((e) => e.type === "CLINIC_PAYABLE")
+      .reduce((sum, e) => sum + e.amount, 0),
+    REFERRAL: allEntries
+      .filter((e) => e.type === "REFERRAL")
+      .reduce((sum, e) => sum + e.amount, 0),
+    totalCount: allEntries.length,
+  };
+
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const paginatedData = filtered.slice(skip, skip + limit);
+
+  return {
+    meta: {
+      page,
+      limit,
+      total,
+      totalPages,
+    },
+    summary,
+    data: paginatedData,
+  };
+};
+
 // 6. Settlements Management
 const getSettlements = async (filters: any, options: IPaginationOptions) => {
   const { limit, page, skip, sortBy, sortOrder } = paginationHelpers.calculatePagination(options);
@@ -1835,6 +2108,7 @@ export const AdminService = {
   getBookingSettings,
   updateBookingSettings,
   getPlatformFinancialOverview,
+  getFinancialLedger,
   getSettlements,
   createSettlement,
   updateSettlementStatus,
