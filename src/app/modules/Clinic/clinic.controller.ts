@@ -567,6 +567,8 @@ const getClinicReconciliationReports = catchAsync(
     const filters = pick(req.query, [
       "clinicId",
       "doctorId",
+      "specialty",
+      "location",
       "period",
       "startDate",
       "endDate",
@@ -589,6 +591,7 @@ const getClinicReconciliationReports = catchAsync(
       data: {
         summary: result.summary,
         doctorBreakdown: result.doctorBreakdown,
+        clinicBreakdown: result.clinicBreakdown,
         data: result.data,
       },
     });

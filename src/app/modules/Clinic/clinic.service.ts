@@ -2298,6 +2298,8 @@ const getClinicReconciliationReports = async (
   filters: {
     clinicId?: string;
     doctorId?: string;
+    specialty?: string;
+    location?: string;
     period?: "daily" | "weekly" | "monthly" | "last_month" | "custom";
     startDate?: string;
     endDate?: string;
@@ -2340,7 +2342,31 @@ const getClinicReconciliationReports = async (
     andConditions.push({ doctorId: filters.doctorId });
   }
 
-  // 2. Date / Period filter
+  // 2. Specialty filter
+  if (filters.specialty && filters.specialty.toLowerCase() !== "all") {
+    andConditions.push({
+      doctor: {
+        speciality: {
+          contains: filters.specialty,
+          mode: "insensitive",
+        },
+      },
+    });
+  }
+
+  // 3. Location filter
+  if (filters.location && filters.location.toLowerCase() !== "all") {
+    andConditions.push({
+      clinic: {
+        location: {
+          contains: filters.location,
+          mode: "insensitive",
+        },
+      },
+    });
+  }
+
+  // 4. Date / Period filter
   let periodStart: Date | undefined;
   let periodEnd: Date | undefined;
   const now = new Date();
@@ -2382,14 +2408,14 @@ const getClinicReconciliationReports = async (
     });
   }
 
-  // 3. Status filter
+  // 5. Status filter
   if (filters.status && filters.status.toUpperCase() !== "ALL") {
     andConditions.push({
       status: filters.status.toUpperCase() as BookingStatus,
     });
   }
 
-  // 4. Search term (patient name / phone)
+  // 6. Search term (patient name / phone)
   if (filters.searchTerm && filters.searchTerm.trim()) {
     const term = filters.searchTerm.trim();
     andConditions.push({
@@ -2412,6 +2438,14 @@ const getClinicReconciliationReports = async (
     prisma.bookingAppointment.findMany({
       where: whereConditions,
       include: {
+        clinic: {
+          select: {
+            id: true,
+            clinicName: true,
+            location: true,
+            logo: true,
+          },
+        },
         doctor: {
           select: {
             id: true,
@@ -2452,6 +2486,14 @@ const getClinicReconciliationReports = async (
         consultFee: true,
         serviceFeeAmount: true,
         totalAmount: true,
+        clinicId: true,
+        clinic: {
+          select: {
+            id: true,
+            clinicName: true,
+            location: true,
+          },
+        },
         doctorId: true,
         doctor: {
           select: {
@@ -2474,6 +2516,11 @@ const getClinicReconciliationReports = async (
   const doctorSummaryMap = new Map<
     string,
     { doctorId: string; doctorName: string; totalBookings: number; completedBookings: number; totalConsultFee: number }
+  >();
+
+  const clinicSummaryMap = new Map<
+    string,
+    { clinicId: string; clinicName: string; location: string; totalBookings: number; completedBookings: number; totalConsultFee: number; totalServiceFee: number }
   >();
 
   for (const apt of allMatching) {
@@ -2511,6 +2558,27 @@ const getClinicReconciliationReports = async (
       }
       doctorSummaryMap.set(apt.doctorId, existing);
     }
+
+    if (apt.clinicId && apt.clinic?.clinicName) {
+      const cName = apt.clinic.clinicName;
+      const cLoc = apt.clinic.location || "";
+      const existing = clinicSummaryMap.get(apt.clinicId) || {
+        clinicId: apt.clinicId,
+        clinicName: cName,
+        location: cLoc,
+        totalBookings: 0,
+        completedBookings: 0,
+        totalConsultFee: 0,
+        totalServiceFee: 0,
+      };
+      existing.totalBookings++;
+      if (apt.status === BookingStatus.COMPLETE) {
+        existing.completedBookings++;
+        existing.totalConsultFee += apt.consultFee || 0;
+        existing.totalServiceFee += apt.serviceFeeAmount || 0;
+      }
+      clinicSummaryMap.set(apt.clinicId, existing);
+    }
   }
 
   return {
@@ -2532,6 +2600,7 @@ const getClinicReconciliationReports = async (
       netClinicReceivable: totalConsultFees,
     },
     doctorBreakdown: Array.from(doctorSummaryMap.values()),
+    clinicBreakdown: Array.from(clinicSummaryMap.values()),
     data: appointments,
   };
 };
