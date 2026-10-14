@@ -6,7 +6,8 @@ import sendResponse from "../../../shared/sendResponse";
 import { PatientServiceFeeService } from "./patientServiceFee.service";
 
 const createPatientServiceFee = catchAsync(async (req: Request, res: Response) => {
-  const result = await PatientServiceFeeService.createPatientServiceFee(req.body);
+  const currentAdmin = (req as any).user;
+  const result = await PatientServiceFeeService.createPatientServiceFee(req.body, currentAdmin);
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,

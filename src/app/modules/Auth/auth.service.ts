@@ -15,22 +15,24 @@ const client = Twilio(config.twilio.accountSid, config.twilio.authToken);
 
 // Helper to generate access & refresh tokens
 export const generateTokens = (user: User, role?: string) => {
+  const effectiveRole = user.role || role;
+  const payload: any = {
+    id: user.id,
+    phoneNumber: user.phoneNumber,
+    role: effectiveRole,
+  };
+  if (effectiveRole === "ADMIN") {
+    payload.adminTier = user.adminTier || "SUPER_ADMIN";
+  }
+
   const accessToken = jwtHelpers.generateToken(
-    {
-      id: user.id,
-      phoneNumber: user.phoneNumber,
-      role: user.role || role,
-    },
+    payload,
     config.jwt.jwt_secret as string,
     config.jwt.expires_in as string,
   );
 
   const refreshToken = jwtHelpers.generateToken(
-    {
-      id: user.id,
-      phoneNumber: user.phoneNumber,
-      role: user.role || role,
-    },
+    payload,
     config.jwt.refresh_token_secret as string,
     config.jwt.refresh_token_expires_in as string,
   );
@@ -354,16 +356,20 @@ const adminLogin = async (payload: { email: string; password: string }) => {
     data: { accessToken, refreshToken },
   });
 
+  const adminTier = user.adminTier || "SUPER_ADMIN";
+
   return {
     message: "Admin login successfully",
     accessToken,
     refreshToken,
     role: 'ADMIN',
+    adminTier,
     user: {
       id: user.id,
       fullName: user.fullName,
       email: user.email,
       phoneNumber: user.phoneNumber,
+      adminTier,
     },
   };
 };

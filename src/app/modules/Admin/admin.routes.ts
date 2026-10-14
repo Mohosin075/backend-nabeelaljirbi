@@ -7,20 +7,50 @@ import { AdminController } from "./admin.controller";
 const router = express.Router();
 
 // General Stats & Directory
-router.get("/stats", AdminController.AdminStats);
-router.get("/get-doctor", AdminController.getDoctors);
-router.get("/get-patient", AdminController.getPatients);
-router.get("/get-clinic", AdminController.getClinics);
+router.get("/stats", auth(UserRole.ADMIN), AdminController.AdminStats);
+router.get("/get-doctor", auth(UserRole.ADMIN), AdminController.getDoctors);
+router.get("/get-patient", auth(UserRole.ADMIN), AdminController.getPatients);
+router.get("/get-clinic", auth(UserRole.ADMIN), AdminController.getClinics);
 
 // Clinic Controls
-router.patch("/clinic-verified/:clinicId", AdminController.AdminClinicVerified);
-router.patch("/clinic-visibility/:clinicId", auth(UserRole.ADMIN), AdminController.updateClinicVisibility);
-router.patch("/set-service-free/:userId", AdminController.SetServiceFree);
+router.patch(
+  "/clinic-verified/:clinicId",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
+  AdminController.AdminClinicVerified
+);
+router.patch(
+  "/clinic-visibility/:clinicId",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
+  AdminController.updateClinicVisibility
+);
+router.patch(
+  "/set-service-free/:userId",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
+  AdminController.SetServiceFree
+);
 
 // Moderation & Suspension
-router.patch("/banned-user/:userId", AdminController.bannedUser);
-router.patch("/suspend-doctor/:doctorId", AdminController.suspendDoctor);
-router.patch("/suspend-clinic/:clinicId", AdminController.suspendClinic);
+router.patch(
+  "/banned-user/:userId",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
+  AdminController.bannedUser
+);
+router.patch(
+  "/suspend-doctor/:doctorId",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
+  AdminController.suspendDoctor
+);
+router.patch(
+  "/suspend-clinic/:clinicId",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
+  AdminController.suspendClinic
+);
 
 // Wallet & Financials (Finance or Super Admin)
 router.patch(
@@ -37,12 +67,32 @@ router.get(
 );
 
 // Subscriptions
-router.get("/patient-platform-subscription", AdminController.getPatientPlatformSubscription);
-router.get("/clinic-platform-subscription", AdminController.getClinicPlatformSubscription);
+router.get(
+  "/patient-platform-subscription",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
+  AdminController.getPatientPlatformSubscription
+);
+router.get(
+  "/clinic-platform-subscription",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
+  AdminController.getClinicPlatformSubscription
+);
 
 // Push Notifications
-router.post("/patient-notification", AdminController.patientNotification);
-router.post("/clinic-notification", AdminController.clinicNotification);
+router.post(
+  "/patient-notification",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS, AdminTier.SUPPORT),
+  AdminController.patientNotification
+);
+router.post(
+  "/clinic-notification",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS, AdminTier.SUPPORT),
+  AdminController.clinicNotification
+);
 
 // Booking Override
 router.patch(
@@ -89,7 +139,7 @@ router.get(
 );
 
 // 3. Platform Booking Settings
-router.get("/booking-settings", AdminController.getBookingSettings);
+router.get("/booking-settings", auth(UserRole.ADMIN), AdminController.getBookingSettings);
 router.patch(
   "/booking-settings",
   auth(UserRole.ADMIN),

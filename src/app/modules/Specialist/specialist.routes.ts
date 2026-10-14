@@ -1,8 +1,9 @@
 import express from "express";
 import auth from "../../middlewares/auth";
+import adminTierAuth from "../../middlewares/adminTierAuth";
 import { SpecialistController } from "./specialist.controller";
 import { s3Uploader } from "../../../helpars/s3Bucket/fileUploadToS3";
-import { UserRole } from "@prisma/client";
+import { AdminTier, UserRole } from "@prisma/client";
 
 const router = express.Router();
 
@@ -12,6 +13,7 @@ const imageUpload = s3Uploader.single("image");
 router.post(
   "/",
   auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
   imageUpload,
   SpecialistController.createSpecialist,
 );
@@ -26,6 +28,7 @@ router.get("/:id", SpecialistController.getSpecialistById);
 router.patch(
   "/:id",
   auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
   imageUpload,
   SpecialistController.updateSpecialist,
 );
@@ -34,6 +37,7 @@ router.patch(
 router.delete(
   "/:id",
   auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
   SpecialistController.deleteSpecialist,
 );
 

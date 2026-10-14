@@ -1,6 +1,7 @@
 import express from "express";
-import { UserRole } from "@prisma/client";
+import { AdminTier, UserRole } from "@prisma/client";
 import auth from "../../middlewares/auth";
+import adminTierAuth from "../../middlewares/adminTierAuth";
 import validateRequest from "../../middlewares/validateRequest";
 import { LegalDocumentController } from "./legalDocument.controller";
 import { LegalDocumentValidation } from "./legalDocument.validation";
@@ -32,6 +33,7 @@ router.get(
 router.post(
   "/admin/publish",
   auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
   validateRequest(LegalDocumentValidation.publishLegalDocumentSchema),
   LegalDocumentController.publishNewVersion
 );

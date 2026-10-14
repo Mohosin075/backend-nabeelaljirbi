@@ -4,6 +4,7 @@ import ApiError from "../../../errors/ApiErrors";
 import { paginationHelpers } from "../../../utils/paginationHelper";
 import prisma from "../../../shared/prisma";
 import { IPaginationOptions } from "../../../interfaces/paginations";
+import { createAuditLog } from "../../utils/auditLogger";
 import {
   ICreateLegalDocumentPayload,
   ILegalDocumentFilters,
@@ -33,7 +34,7 @@ const getActiveDocument = async (role: UserRole) => {
 };
 
 // 2. Publish new version of legal document (Admin only)
-const publishNewVersion = async (payload: ICreateLegalDocumentPayload) => {
+const publishNewVersion = async (payload: ICreateLegalDocumentPayload, currentAdmin?: any) => {
   const {
     role,
     title,
@@ -91,6 +92,21 @@ const publishNewVersion = async (payload: ICreateLegalDocumentPayload) => {
     });
 
     return newDoc;
+  });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "LEGAL_DOCUMENT_PUBLISHED",
+    targetType: "LEGAL_DOCUMENT",
+    targetId: result.id,
+    details: {
+      role: result.role,
+      version: result.version,
+      title: result.title,
+      requireReacceptance: result.requireReacceptance,
+    },
   });
 
   return result;

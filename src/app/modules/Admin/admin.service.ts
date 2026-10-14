@@ -233,7 +233,7 @@ const getPatients = async (filters: any, options: IPaginationOptions) => {
   };
 };
 
-const updateWallet = async (userId: string, amount: number) => {
+const updateWallet = async (userId: string, amount: number, currentAdmin?: any) => {
   const user = await prisma.user.findUnique({
     where: { id: userId }
   });
@@ -263,8 +263,23 @@ const updateWallet = async (userId: string, amount: number) => {
     });
   });
 
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: amount >= 0 ? "WALLET_TOP_UP" : "WALLET_DEDUCT",
+    targetType: "WALLET",
+    targetId: userId,
+    details: {
+      userId,
+      amount,
+      userRole: user.role,
+      userFullName: user.fullName || user.phoneNumber,
+    },
+  });
+
   return result;
-}
+};
 
 const getClinics = async (filters: any, options: IPaginationOptions) => {
   const { limit, page, skip, sortBy, sortOrder } = paginationHelpers.calculatePagination(options);
@@ -383,7 +398,7 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
   };
 };
 
-const AdminClinicVerified = async (clinicId: string, adminVerified: boolean) => {
+const AdminClinicVerified = async (clinicId: string, adminVerified: boolean, currentAdmin?: any) => {
   const existingClinic = await prisma.clinic.findFirst({
     where: {
       OR: [
@@ -405,10 +420,21 @@ const AdminClinicVerified = async (clinicId: string, adminVerified: boolean) => 
       adminVerified: adminVerified,
     },
   });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: adminVerified ? "CLINIC_VERIFIED" : "CLINIC_UNVERIFIED",
+    targetType: "CLINIC",
+    targetId: existingClinic.id,
+    details: { clinicName: existingClinic.clinicName, adminVerified },
+  });
+
   return result;
 };
 
-const suspendUserWithRefund = async (targetId: string, suspended: boolean, reason?: string) => {
+const suspendUserWithRefund = async (targetId: string, suspended: boolean, reason?: string, currentAdmin?: any) => {
   // 1. Locate user, doctor, and clinic entities
   let user: any = await prisma.user.findUnique({
     where: { id: targetId },
@@ -455,6 +481,16 @@ const suspendUserWithRefund = async (targetId: string, suspended: boolean, reaso
         banned: false,
         status: UserStatus.ACTIVE,
       },
+    });
+
+    await createAuditLog({
+      adminId: currentAdmin?.id,
+      adminName: currentAdmin?.fullName,
+      adminTier: currentAdmin?.adminTier,
+      action: `${user.role || 'USER'}_ACTIVATED`,
+      targetType: user.role || 'USER',
+      targetId: targetId,
+      details: { userId: user.id, fullName: user.fullName, role: user.role, reason },
     });
 
     return {
@@ -531,6 +567,22 @@ const suspendUserWithRefund = async (targetId: string, suspended: boolean, reaso
     }
   }
 
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: `${user.role || 'USER'}_SUSPENDED`,
+    targetType: user.role || 'USER',
+    targetId: targetId,
+    details: {
+      userId: user.id,
+      fullName: user.fullName,
+      role: user.role,
+      cancelledAppointmentsCount: cancelledCount,
+      reason,
+    },
+  });
+
   return {
     user: updatedUser,
     cancelledAppointmentsCount: cancelledCount,
@@ -539,16 +591,16 @@ const suspendUserWithRefund = async (targetId: string, suspended: boolean, reaso
   };
 };
 
-const bannedUser = async (userId: string, banned: boolean) => {
-  return await suspendUserWithRefund(userId, banned);
+const bannedUser = async (userId: string, banned: boolean, reason?: string, currentAdmin?: any) => {
+  return await suspendUserWithRefund(userId, banned, reason, currentAdmin);
 };
 
-const suspendDoctor = async (doctorId: string, suspended: boolean) => {
-  return await suspendUserWithRefund(doctorId, suspended);
+const suspendDoctor = async (doctorId: string, suspended: boolean, reason?: string, currentAdmin?: any) => {
+  return await suspendUserWithRefund(doctorId, suspended, reason, currentAdmin);
 };
 
-const suspendClinic = async (clinicId: string, suspended: boolean) => {
-  return await suspendUserWithRefund(clinicId, suspended);
+const suspendClinic = async (clinicId: string, suspended: boolean, reason?: string, currentAdmin?: any) => {
+  return await suspendUserWithRefund(clinicId, suspended, reason, currentAdmin);
 };
 
 
@@ -775,7 +827,7 @@ const getClinicPlatformSubscription = async (filters: any, options: IPaginationO
   };
 }
 
-const SetServiceFree = async (userId: string, serviceFree: number) => {
+const SetServiceFree = async (userId: string, serviceFree: number, currentAdmin?: any) => {
   let clinicUserId: string | undefined;
 
   const targetUser = await prisma.user.findUnique({
@@ -830,11 +882,21 @@ const SetServiceFree = async (userId: string, serviceFree: number) => {
     return result;
   });
 
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "SET_CLINIC_SERVICE_FEE",
+    targetType: "CLINIC",
+    targetId: clinicUserId,
+    details: { serviceFeePercentage: feeValue },
+  });
+
   return clinic;
 };
 
 // patient notification from admin
-const createPatientNotification = async (payload: { userId: string[], title: string, description: string }) => {
+const createPatientNotification = async (payload: { userId: string[], title: string, description: string }, currentAdmin?: any) => {
   const { userId, title, description } = payload;
 
   if (!Array.isArray(userId) || userId.length === 0) {
@@ -848,11 +910,20 @@ const createPatientNotification = async (payload: { userId: string[], title: str
     type: 'PATIENT'
   });
 
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "BROADCAST_PATIENT_NOTIFICATION",
+    targetType: "NOTIFICATION",
+    details: { recipientCount: userId.length, title },
+  });
+
   return { success: true, message: `Queued ${userId.length} notifications to be sent.` };
 };
 
 // Clinic notification from admin
-const createClinicNotification = async (payload: { userId: string[], title: string, description: string }) => {
+const createClinicNotification = async (payload: { userId: string[], title: string, description: string }, currentAdmin?: any) => {
   const { userId, title, description } = payload;
 
   if (!Array.isArray(userId) || userId.length === 0) {
@@ -866,6 +937,15 @@ const createClinicNotification = async (payload: { userId: string[], title: stri
     type: 'CLINIC'
   });
 
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "BROADCAST_CLINIC_NOTIFICATION",
+    targetType: "NOTIFICATION",
+    details: { recipientCount: userId.length, title },
+  });
+
   return { success: true, message: `Queued ${userId.length} notifications to be sent.` };
 };
 
@@ -873,7 +953,8 @@ const createClinicNotification = async (payload: { userId: string[], title: stri
 const overrideAppointmentStatus = async (
   appointmentId: string,
   newStatus: BookingStatus,
-  reason?: string
+  reason?: string,
+  currentAdmin?: any
 ) => {
   const appointment = await prisma.bookingAppointment.findUnique({
     where: { id: appointmentId },
@@ -955,6 +1036,23 @@ const overrideAppointmentStatus = async (
   } catch (err) {
     console.error("WS broadcast error:", err);
   }
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "BOOKING_STATUS_OVERRIDE",
+    targetType: "BOOKING",
+    targetId: appointmentId,
+    details: {
+      oldStatus: appointment.status,
+      newStatus,
+      reason: reasonText,
+      serialNumber: appointment.serialNumber,
+      clinicId: appointment.clinicId,
+      doctorId: appointment.doctorId,
+    },
+  });
 
   return result;
 };

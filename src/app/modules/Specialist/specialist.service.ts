@@ -4,13 +4,27 @@ import ApiError from "../../../errors/ApiErrors";
 import { paginationHelpers } from "../../../utils/paginationHelper";
 import prisma from "../../../shared/prisma";
 import { IPaginationOptions } from "../../../interfaces/paginations";
+import { createAuditLog } from "../../utils/auditLogger";
 
-const createSpecialist = async (data: { name: string; image: string }) => {
+const createSpecialist = async (
+  data: { name: string; image: string },
+  currentAdmin?: any
+) => {
   const result = await prisma.specialists.create({
     data: {
       name: data.name,
       image: data.image,
     },
+  });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "SPECIALIST_CREATED",
+    targetType: "SPECIALIST",
+    targetId: result.id,
+    details: { name: data.name, image: data.image },
   });
 
   return result;
@@ -79,6 +93,7 @@ const getSpecialistById = async (id: string) => {
 const updateSpecialist = async (
   id: string,
   data: { name?: string; image?: string },
+  currentAdmin?: any
 ) => {
   const specialist = await prisma.specialists.findUnique({
     where: { id },
@@ -93,10 +108,20 @@ const updateSpecialist = async (
     data,
   });
 
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "SPECIALIST_UPDATED",
+    targetType: "SPECIALIST",
+    targetId: id,
+    details: data,
+  });
+
   return result;
 };
 
-const deleteSpecialist = async (id: string) => {
+const deleteSpecialist = async (id: string, currentAdmin?: any) => {
   const specialist = await prisma.specialists.findUnique({
     where: { id },
   });
@@ -107,6 +132,16 @@ const deleteSpecialist = async (id: string) => {
 
   await prisma.specialists.delete({
     where: { id },
+  });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "SPECIALIST_DELETED",
+    targetType: "SPECIALIST",
+    targetId: id,
+    details: { name: specialist.name },
   });
 
   return null;

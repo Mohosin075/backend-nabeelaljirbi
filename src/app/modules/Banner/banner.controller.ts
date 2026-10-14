@@ -22,7 +22,7 @@ const createBanner = catchAsync(async (req: Request, res: Response) => {
         }
     }
 
-    const result = await BannerService.createBanner(bannerData);
+    const result = await BannerService.createBanner(bannerData, (req as any).user);
 
     sendResponse(res, {
         statusCode: httpStatus.CREATED,
@@ -41,7 +41,6 @@ const getAllBanners = catchAsync(async (req: Request, res: Response) => {
         data: result,
     });
 });
-;
 
 const updateBanner = catchAsync(async (req: Request, res: Response) => {
     const { id } = req.params;
@@ -77,7 +76,7 @@ const updateBanner = catchAsync(async (req: Request, res: Response) => {
         ...(image && { image })
     };
 
-    const result = await BannerService.updateBanner(id, updateData);
+    const result = await BannerService.updateBanner(id, updateData, (req as any).user);
 
     sendResponse(res, {
         statusCode: httpStatus.OK,
@@ -89,7 +88,7 @@ const updateBanner = catchAsync(async (req: Request, res: Response) => {
 
 const deleteBanner = catchAsync(async (req: Request, res: Response) => {
     const { id } = req.params;
-    const result = await BannerService.deleteBanner(id);
+    const result = await BannerService.deleteBanner(id, (req as any).user);
     sendResponse(res, {
         statusCode: httpStatus.OK,
         success: true,

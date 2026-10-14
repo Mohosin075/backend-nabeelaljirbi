@@ -71,13 +71,16 @@ const getAdminVerifications = catchAsync(async (req: Request, res: Response) => 
 
 const reviewVerification = catchAsync(async (req: Request, res: Response) => {
   const { targetId, type, action, adminNote, badgeActive } = req.body;
-  const result = await VerificationService.reviewVerification({
-    targetId,
-    type,
-    action,
-    adminNote,
-    badgeActive,
-  });
+  const result = await VerificationService.reviewVerification(
+    {
+      targetId,
+      type,
+      action,
+      adminNote,
+      badgeActive,
+    },
+    (req as any).user
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -89,11 +92,14 @@ const reviewVerification = catchAsync(async (req: Request, res: Response) => {
 
 const toggleBadgeActivation = catchAsync(async (req: Request, res: Response) => {
   const { targetId, type, badgeActive } = req.body;
-  const result = await VerificationService.toggleBadgeActivation({
-    targetId,
-    type,
-    badgeActive: Boolean(badgeActive),
-  });
+  const result = await VerificationService.toggleBadgeActivation(
+    {
+      targetId,
+      type,
+      badgeActive: Boolean(badgeActive),
+    },
+    (req as any).user
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

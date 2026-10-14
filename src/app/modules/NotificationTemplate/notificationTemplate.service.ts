@@ -2,6 +2,7 @@ import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
 import prisma from "../../../shared/prisma";
 import { NotificationTemplate } from "@prisma/client";
+import { createAuditLog } from "../../utils/auditLogger";
 import {
   ICreateNotificationTemplate,
   IUpdateNotificationTemplate,
@@ -248,7 +249,8 @@ const getTemplateByEventKey = async (
 };
 
 const createTemplate = async (
-  data: ICreateNotificationTemplate
+  data: ICreateNotificationTemplate,
+  currentAdmin?: any
 ): Promise<NotificationTemplate> => {
   const existing = await prisma.notificationTemplate.findUnique({
     where: { eventKey: data.eventKey },
@@ -261,7 +263,7 @@ const createTemplate = async (
     );
   }
 
-  return prisma.notificationTemplate.create({
+  const result = await prisma.notificationTemplate.create({
     data: {
       eventKey: data.eventKey,
       name: data.name,
@@ -278,11 +280,24 @@ const createTemplate = async (
       isActive: data.isActive ?? true,
     },
   });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "NOTIFICATION_TEMPLATE_CREATED",
+    targetType: "NOTIFICATION_TEMPLATE",
+    targetId: result.id,
+    details: { eventKey: data.eventKey, name: data.name },
+  });
+
+  return result;
 };
 
 const updateTemplate = async (
   id: string,
-  payload: IUpdateNotificationTemplate
+  payload: IUpdateNotificationTemplate,
+  currentAdmin?: any
 ): Promise<NotificationTemplate> => {
   const existing = await prisma.notificationTemplate.findUnique({
     where: { id },
@@ -292,13 +307,25 @@ const updateTemplate = async (
     throw new ApiError(httpStatus.NOT_FOUND, "Notification template not found");
   }
 
-  return prisma.notificationTemplate.update({
+  const result = await prisma.notificationTemplate.update({
     where: { id },
     data: payload,
   });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "NOTIFICATION_TEMPLATE_UPDATED",
+    targetType: "NOTIFICATION_TEMPLATE",
+    targetId: id,
+    details: { eventKey: existing.eventKey, payload },
+  });
+
+  return result;
 };
 
-const deleteTemplate = async (id: string): Promise<NotificationTemplate> => {
+const deleteTemplate = async (id: string, currentAdmin?: any): Promise<NotificationTemplate> => {
   const existing = await prisma.notificationTemplate.findUnique({
     where: { id },
   });
@@ -307,9 +334,21 @@ const deleteTemplate = async (id: string): Promise<NotificationTemplate> => {
     throw new ApiError(httpStatus.NOT_FOUND, "Notification template not found");
   }
 
-  return prisma.notificationTemplate.delete({
+  const result = await prisma.notificationTemplate.delete({
     where: { id },
   });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "NOTIFICATION_TEMPLATE_DELETED",
+    targetType: "NOTIFICATION_TEMPLATE",
+    targetId: id,
+    details: { eventKey: existing.eventKey, name: existing.name },
+  });
+
+  return result;
 };
 
 /**

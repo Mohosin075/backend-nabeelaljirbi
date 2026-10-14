@@ -37,7 +37,7 @@ const getTemplateByEventKey = catchAsync(async (req: Request, res: Response) => 
 });
 
 const createTemplate = catchAsync(async (req: Request, res: Response) => {
-  const result = await NotificationTemplateService.createTemplate(req.body);
+  const result = await NotificationTemplateService.createTemplate(req.body, (req as any).user);
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
     success: true,
@@ -48,7 +48,7 @@ const createTemplate = catchAsync(async (req: Request, res: Response) => {
 
 const updateTemplate = catchAsync(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const result = await NotificationTemplateService.updateTemplate(id, req.body);
+  const result = await NotificationTemplateService.updateTemplate(id, req.body, (req as any).user);
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
@@ -59,7 +59,7 @@ const updateTemplate = catchAsync(async (req: Request, res: Response) => {
 
 const deleteTemplate = catchAsync(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const result = await NotificationTemplateService.deleteTemplate(id);
+  const result = await NotificationTemplateService.deleteTemplate(id, (req as any).user);
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,

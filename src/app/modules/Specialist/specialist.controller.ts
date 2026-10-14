@@ -28,7 +28,8 @@ const createSpecialist = catchAsync(async (req: Request, res: Response) => {
     image: imageUrl,
   };
 
-  const result = await SpecialistService.createSpecialist(payload);
+  const currentAdmin = (req as any).user;
+  const result = await SpecialistService.createSpecialist(payload, currentAdmin);
 
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
@@ -87,7 +88,8 @@ const updateSpecialist = catchAsync(async (req: Request, res: Response) => {
     ...(imageUrl && { image: imageUrl }),
   };
 
-  const result = await SpecialistService.updateSpecialist(id, payload);
+  const currentAdmin = (req as any).user;
+  const result = await SpecialistService.updateSpecialist(id, payload, currentAdmin);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -103,7 +105,8 @@ const deleteSpecialist = catchAsync(async (req: Request, res: Response) => {
   // Get specialist to delete image
   const specialist = await SpecialistService.getSpecialistById(id);
 
-  await SpecialistService.deleteSpecialist(id);
+  const currentAdmin = (req as any).user;
+  await SpecialistService.deleteSpecialist(id, currentAdmin);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

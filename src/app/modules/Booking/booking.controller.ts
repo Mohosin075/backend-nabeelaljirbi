@@ -24,8 +24,9 @@ const getBookings = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const role = req.user?.role;
   const options = pick(req.query, paginationFields);
+  const filters = pick(req.query, ["status", "doctorId", "clinicId", "date", "searchTerm"]);
 
-  const result = await BookingService.getBookings(userId!, role!, options);
+  const result = await BookingService.getBookings(userId!, role!, { ...options, ...filters });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,

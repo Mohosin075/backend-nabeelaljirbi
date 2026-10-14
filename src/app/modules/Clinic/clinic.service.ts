@@ -625,15 +625,34 @@ const getManagerBookingHistory = async (
   filters: any,
   options: IPaginationOptions,
 ) => {
-  const clinic = await getClinicByUserId(userId);
-  const clinicId = clinic.id;
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { clinic: true, manager: { include: { clinic: true } } },
+  });
+
+  if (!user) {
+    throw new ApiError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  let clinicId: string | null = null;
+  if (user.clinic) {
+    clinicId = user.clinic.id;
+  } else if (user.manager && user.manager.length > 0 && user.manager[0]?.clinic) {
+    clinicId = user.manager[0].clinic.id;
+  } else if (user.role === UserRole.ADMIN && filters.clinicId) {
+    clinicId = filters.clinicId;
+  } else if (user.role !== UserRole.ADMIN) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found for this user");
+  }
 
   const { limit, page, skip } = paginationHelpers.calculatePagination(options);
   const { searchTerm, ...filterData } = filters;
 
   const andConditions: Prisma.BookingAppointmentWhereInput[] = [];
 
-  andConditions.push({ clinicId });
+  if (clinicId) {
+    andConditions.push({ clinicId });
+  }
 
   if (searchTerm) {
     andConditions.push({
@@ -1095,7 +1114,21 @@ const managerUpdateAppointmentStatus = async (
 };
 
 const getClinicStats = async (userId: string) => {
-  const clinic = await getClinicByUserId(userId);
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { clinic: true, manager: { include: { clinic: true } } },
+  });
+
+  if (!user) {
+    throw new ApiError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  let clinicId: string | null = null;
+  if (user.clinic) {
+    clinicId = user.clinic.id;
+  } else if (user.manager && user.manager.length > 0 && user.manager[0]?.clinic) {
+    clinicId = user.manager[0].clinic.id;
+  }
 
   // 🌍 UTC HANDLING: Always use UTC for date boundaries to ensure consistent
   // statistics calculation regardless of server timezone
@@ -1104,51 +1137,92 @@ const getClinicStats = async (userId: string) => {
   const tomorrow = new Date(today);
   tomorrow.setUTCDate(today.getUTCDate() + 1);
 
-  const [todayAppointment, pendingAppointment, doctorCount] = await Promise.all(
-    [
-      // Today
-      prisma.bookingAppointment.count({
-        where: {
-          clinicId: clinic.id,
-          consultDate: {
-            gte: today,
-            lt: tomorrow,
-          },
-          status: {
-           in: [
-             BookingStatus.CONFIRMED,
-             BookingStatus.INPROGRESS,
-             BookingStatus.COMPLETE,
-             BookingStatus.ARRIVED,
-             BookingStatus.NOT_SHOW,
-          ],
-         },
-        },
-      }),
-      // Pending
-      prisma.bookingAppointment.count({
-        where: {
-          clinicId: clinic.id,
-          status: BookingStatus.PENDING,
-          // consultDate: {
-          //   gte: today,
-          //   lt: tomorrow,
-          // },
-        },
-      }),
+  const whereClinic: Prisma.BookingAppointmentWhereInput = clinicId
+    ? { clinicId }
+    : {};
 
-      // doctor
-      prisma.doctor.count({
-        where: {
-          clinicId: clinic.id,
+  const [
+    todayAppointment,
+    pendingAppointment,
+    confirmedAppointment,
+    completedAppointment,
+    cancelledAppointment,
+    noShowAppointment,
+    totalAppointment,
+    doctorCount,
+  ] = await Promise.all([
+    // Today
+    prisma.bookingAppointment.count({
+      where: {
+        ...whereClinic,
+        consultDate: {
+          gte: today,
+          lt: tomorrow,
         },
-      }),
-    ],
-  );
+        status: {
+          in: [
+            BookingStatus.CONFIRMED,
+            BookingStatus.INPROGRESS,
+            BookingStatus.COMPLETE,
+            BookingStatus.ARRIVED,
+            BookingStatus.NOT_SHOW,
+          ],
+        },
+      },
+    }),
+    // Pending
+    prisma.bookingAppointment.count({
+      where: {
+        ...whereClinic,
+        status: BookingStatus.PENDING,
+      },
+    }),
+    // Confirmed
+    prisma.bookingAppointment.count({
+      where: {
+        ...whereClinic,
+        status: BookingStatus.CONFIRMED,
+      },
+    }),
+    // Completed
+    prisma.bookingAppointment.count({
+      where: {
+        ...whereClinic,
+        status: BookingStatus.COMPLETE,
+      },
+    }),
+    // Cancelled
+    prisma.bookingAppointment.count({
+      where: {
+        ...whereClinic,
+        status: BookingStatus.CANCELLED,
+      },
+    }),
+    // No show
+    prisma.bookingAppointment.count({
+      where: {
+        ...whereClinic,
+        status: BookingStatus.NOT_SHOW,
+      },
+    }),
+    // Total
+    prisma.bookingAppointment.count({
+      where: whereClinic,
+    }),
+    // Doctor
+    clinicId
+      ? prisma.doctor.count({ where: { clinicId } })
+      : prisma.doctor.count(),
+  ]);
 
   return {
     todayAppointment,
     pendingAppointment,
+    confirmedAppointment,
+    completedAppointment,
+    cancelledAppointment,
+    noShowAppointment,
+    totalAppointment,
     doctorCount,
   };
 };
@@ -1328,19 +1402,39 @@ const getClinicManagerDoctor = async (
 
   const { search, rating, consultFee, specialty } = filters;
 
-  const clinic = await getClinicByUserId(userId);
-  const clinicId = clinic.id;
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { clinic: true, manager: { include: { clinic: true } } },
+  });
+
+  if (!user) {
+    throw new ApiError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  let clinicId: string | null = null;
+  if (user.clinic) {
+    clinicId = user.clinic.id;
+  } else if (user.manager && user.manager.length > 0 && user.manager[0]?.clinic) {
+    clinicId = user.manager[0].clinic.id;
+  } else if (user.role === UserRole.ADMIN && (filters as any).clinicId) {
+    clinicId = (filters as any).clinicId;
+  } else if (user.role !== UserRole.ADMIN) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found for this user");
+  }
 
   // 1️⃣ Build Prisma WHERE conditions
   const andConditions: Prisma.UserWhereInput[] = [
     { role: UserRole.DOCTOR },
-    {
-      OR: [
-        { doctor: { clinicId: clinic.id } },
-        { doctor: { doctorClinics: { some: { clinicId: clinic.id, isActive: true } } } },
-      ],
-    },
   ];
+
+  if (clinicId) {
+    andConditions.push({
+      OR: [
+        { doctor: { clinicId } },
+        { doctor: { doctorClinics: { some: { clinicId, isActive: true } } } },
+      ],
+    });
+  }
 
   if (consultFee) {
     andConditions.push({
@@ -2202,6 +2296,7 @@ const executeDoctorAbsence = async (
 const getClinicReconciliationReports = async (
   userId: string,
   filters: {
+    clinicId?: string;
     doctorId?: string;
     period?: "daily" | "weekly" | "monthly" | "last_month" | "custom";
     startDate?: string;
@@ -2214,14 +2309,31 @@ const getClinicReconciliationReports = async (
   const { page, limit, skip, sortBy, sortOrder } =
     paginationHelpers.calculatePagination(options);
 
-  const clinic = await getClinicByUserId(userId);
-  if (!clinic) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { clinic: true, manager: { include: { clinic: true } } },
+  });
+
+  if (!user) {
+    throw new ApiError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  let clinicId: string | null = null;
+  if (user.clinic) {
+    clinicId = user.clinic.id;
+  } else if (user.manager && user.manager.length > 0 && user.manager[0]?.clinic) {
+    clinicId = user.manager[0].clinic.id;
+  } else if (user.role === UserRole.ADMIN && filters.clinicId && filters.clinicId.toLowerCase() !== "all") {
+    clinicId = filters.clinicId;
+  } else if (user.role !== UserRole.ADMIN) {
     throw new ApiError(httpStatus.NOT_FOUND, "Clinic profile not found");
   }
 
-  const andConditions: Prisma.BookingAppointmentWhereInput[] = [
-    { clinicId: clinic.id },
-  ];
+  const andConditions: Prisma.BookingAppointmentWhereInput[] = [];
+
+  if (clinicId) {
+    andConditions.push({ clinicId });
+  }
 
   // 1. Doctor filter
   if (filters.doctorId && filters.doctorId.toLowerCase() !== "all") {
@@ -2425,26 +2537,36 @@ const getClinicReconciliationReports = async (
 };
 
 const getClinicFinancialSummary = async (userId: string) => {
-  const clinic = await getClinicByUserId(userId);
-  const clinicUser = await prisma.user.findUnique({
-    where: { id: clinic.userId },
-    select: {
-      id: true,
-      wallet: true,
-      frozenWallet: true,
-      totalEarnings: true,
-      currentEarnings: true,
-    },
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { clinic: true, manager: { include: { clinic: true } } },
   });
+
+  if (!user) {
+    throw new ApiError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  let clinicId: string | null = null;
+  let clinicUserId: string = userId;
+  if (user.clinic) {
+    clinicId = user.clinic.id;
+    clinicUserId = user.id;
+  } else if (user.manager && user.manager.length > 0 && user.manager[0]?.clinic) {
+    clinicId = user.manager[0].clinic.id;
+    clinicUserId = user.manager[0].clinic.userId;
+  }
 
   const now = new Date();
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
 
+  const whereClinic: Prisma.BookingAppointmentWhereInput = clinicId
+    ? { clinicId, status: BookingStatus.COMPLETE }
+    : { status: BookingStatus.COMPLETE };
+
   const [currentMonthAppointments, completedAppointments] = await Promise.all([
     prisma.bookingAppointment.aggregate({
       where: {
-        clinicId: clinic.id,
-        status: BookingStatus.COMPLETE,
+        ...whereClinic,
         consultDate: { gte: monthStart },
       },
       _sum: {
@@ -2456,24 +2578,21 @@ const getClinicFinancialSummary = async (userId: string) => {
       },
     }),
     prisma.bookingAppointment.count({
-      where: {
-        clinicId: clinic.id,
-        status: BookingStatus.COMPLETE,
-      },
+      where: whereClinic,
     }),
   ]);
 
   const recentTransactions = await prisma.topUp.findMany({
-    where: { userId: clinic.userId },
+    where: clinicId ? { userId: clinicUserId } : {},
     orderBy: { createdAt: "desc" },
     take: 10,
   });
 
   return {
-    walletBalance: clinicUser?.wallet || 0,
-    frozenWallet: clinicUser?.frozenWallet || 0,
-    totalEarnings: clinicUser?.totalEarnings || 0,
-    currentEarnings: clinicUser?.currentEarnings || 0,
+    walletBalance: user.wallet || 0,
+    frozenWallet: user.frozenWallet || 0,
+    totalEarnings: user.totalEarnings || currentMonthAppointments._sum?.consultFee || 0,
+    currentEarnings: user.currentEarnings || currentMonthAppointments._sum?.consultFee || 0,
     currentMonthGross: currentMonthAppointments._sum?.consultFee || 0,
     currentMonthPlatformFees: currentMonthAppointments._sum?.serviceFeeAmount || 0,
     currentMonthCompletedCount: currentMonthAppointments._count?.id || 0,

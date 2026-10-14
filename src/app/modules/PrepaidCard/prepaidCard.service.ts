@@ -5,14 +5,18 @@ import { IPaginationOptions } from "../../../interfaces/paginations";
 import prisma from "../../../shared/prisma";
 import { paginationHelpers } from "../../../utils/paginationHelper";
 import { generateUniqueCardNumber } from "../../../helpars/NumberGeneration/card.number";
+import { createAuditLog } from "../../utils/auditLogger";
 import * as ExcelJS from "exceljs";
 import path from "path";
 import fs from "fs";
 
-export const createPrepaidCard = async (payload: {
-  amount: number;
-  quantity: number;
-}) => {
+export const createPrepaidCard = async (
+  payload: {
+    amount: number;
+    quantity: number;
+  },
+  currentAdmin?: any
+) => {
   const cardsData = [];
 
   for (let i = 0; i < payload.quantity; i++) {
@@ -29,6 +33,19 @@ export const createPrepaidCard = async (payload: {
   const result = await prisma.prepaidCard.createMany({
     data: cardsData,
     skipDuplicates: true, // safety net
+  });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "PREPAID_CARDS_CREATED",
+    targetType: "PREPAID_CARD",
+    details: {
+      amount: payload.amount,
+      quantity: payload.quantity,
+      totalCreated: result.count,
+    },
   });
 
   return {
@@ -171,10 +188,24 @@ const updatePrepaidCard = async (id: string, payload: { isActive?: boolean; amou
   return result;
 };
 
-const deletePrepaidCard = async (id: string) => {
+const deletePrepaidCard = async (id: string, currentAdmin?: any) => {
   const result = await prisma.prepaidCard.delete({
     where: { id },
   });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "PREPAID_CARD_DELETED",
+    targetType: "PREPAID_CARD",
+    targetId: id,
+    details: {
+      cardNumber: result.cardNumber,
+      amount: result.amount,
+    },
+  });
+
   return result;
 };
 

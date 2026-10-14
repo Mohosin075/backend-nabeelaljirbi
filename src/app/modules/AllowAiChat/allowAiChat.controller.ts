@@ -6,7 +6,8 @@ import sendResponse from "../../../shared/sendResponse";
 import { AllowAiChatService } from "./allowAiChat.service";
 
 const createAllowAiChat = catchAsync(async (req: Request, res: Response) => {
-  const result = await AllowAiChatService.createAllowAiChat(req.body);
+  const currentAdmin = (req as any).user;
+  const result = await AllowAiChatService.createAllowAiChat(req.body, currentAdmin);
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
     success: true,

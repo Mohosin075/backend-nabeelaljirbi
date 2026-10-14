@@ -1,6 +1,7 @@
 import express from "express";
 import auth from "../../middlewares/auth";
-import { UserRole } from "@prisma/client";
+import adminTierAuth from "../../middlewares/adminTierAuth";
+import { AdminTier, UserRole } from "@prisma/client";
 import { VerificationController } from "./verification.controller";
 import multer from "multer";
 import { fileFilter } from "../../../helpars/file/fileFilter";
@@ -43,12 +44,14 @@ router.get(
 router.patch(
   "/admin/review",
   auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
   VerificationController.reviewVerification
 );
 
 router.patch(
   "/admin/toggle-badge",
   auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
   VerificationController.toggleBadgeActivation
 );
 

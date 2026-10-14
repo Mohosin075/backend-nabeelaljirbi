@@ -1,6 +1,7 @@
 import prisma from "../../../shared/prisma";
 import ApiError from "../../../errors/ApiErrors";
 import httpStatus from "http-status";
+import { createAuditLog } from "../../utils/auditLogger";
 
 interface VerificationDocumentItem {
   title: string;
@@ -300,14 +301,19 @@ const getAdminVerifications = async (query: {
   };
 };
 
-const reviewVerification = async (payload: {
-  targetId: string;
-  type: "DOCTOR" | "CLINIC";
-  action: "APPROVED" | "REJECTED";
-  adminNote?: string;
-  badgeActive?: boolean;
-}) => {
+const reviewVerification = async (
+  payload: {
+    targetId: string;
+    type: "DOCTOR" | "CLINIC";
+    action: "APPROVED" | "REJECTED";
+    adminNote?: string;
+    badgeActive?: boolean;
+  },
+  currentAdmin?: any
+) => {
   const { targetId, type, action, adminNote, badgeActive } = payload;
+
+  let result: any;
 
   if (type === "DOCTOR") {
     const doctor = await prisma.doctor.findUnique({
@@ -325,7 +331,7 @@ const reviewVerification = async (payload: {
       },
     });
 
-    return updated;
+    result = updated;
   } else {
     const clinic = await prisma.clinic.findUnique({
       where: { id: targetId },
@@ -342,16 +348,38 @@ const reviewVerification = async (payload: {
       },
     });
 
-    return updated;
+    result = updated;
   }
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: `VERIFICATION_${action}`,
+    targetType: type,
+    targetId,
+    details: {
+      type,
+      action,
+      adminNote,
+      badgeActive: result.badgeActive,
+    },
+  });
+
+  return result;
 };
 
-const toggleBadgeActivation = async (payload: {
-  targetId: string;
-  type: "DOCTOR" | "CLINIC";
-  badgeActive: boolean;
-}) => {
+const toggleBadgeActivation = async (
+  payload: {
+    targetId: string;
+    type: "DOCTOR" | "CLINIC";
+    badgeActive: boolean;
+  },
+  currentAdmin?: any
+) => {
   const { targetId, type, badgeActive } = payload;
+
+  let result: any;
 
   if (type === "DOCTOR") {
     const doctor = await prisma.doctor.findUnique({
@@ -363,7 +391,7 @@ const toggleBadgeActivation = async (payload: {
       where: { id: targetId },
       data: { badgeActive },
     });
-    return updated;
+    result = updated;
   } else {
     const clinic = await prisma.clinic.findUnique({
       where: { id: targetId },
@@ -374,8 +402,23 @@ const toggleBadgeActivation = async (payload: {
       where: { id: targetId },
       data: { badgeActive },
     });
-    return updated;
+    result = updated;
   }
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: badgeActive ? "BLUE_BADGE_ACTIVATED" : "BLUE_BADGE_DEACTIVATED",
+    targetType: type,
+    targetId,
+    details: {
+      type,
+      badgeActive,
+    },
+  });
+
+  return result;
 };
 
 export const VerificationService = {

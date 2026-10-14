@@ -1,9 +1,11 @@
 
 import { Country, PatientServiceFee } from "@prisma/client";
 import prisma from "../../../shared/prisma";
+import { createAuditLog } from "../../utils/auditLogger";
 
 const createPatientServiceFee = async (
-  payload: Record<string, string | number>
+  payload: Record<string, string | number>,
+  currentAdmin?: any
 ): Promise<PatientServiceFee[]> => {
   const entries = Object.entries(payload);
 
@@ -26,6 +28,16 @@ const createPatientServiceFee = async (
       });
     })
   );
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: "PATIENT_SERVICE_FEE_UPDATED",
+    targetType: "PATIENT_SERVICE_FEE",
+    details: payload,
+  });
+
   return results;
 };
 

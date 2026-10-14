@@ -3890,3 +3890,7 @@
 {"level":"info","message":"Incoming request: GET /api/v1/admin/staff?page=1&limit=10&adminTier=FINANCE","service":"default-service-name","timestamp":"2026-10-13 17:02:01"}
 {"level":"info","message":"Incoming request: GET /api/v1/admin/staff?page=1&limit=10&adminTier=OPERATIONS","service":"default-service-name","timestamp":"2026-10-13 17:02:02"}
 {"level":"info","message":"Incoming request: GET /api/v1/admin/staff?page=1&limit=10&adminTier=SUPER_ADMIN","service":"default-service-name","timestamp":"2026-10-13 17:02:02"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/stats","service":"default-service-name","timestamp":"2026-10-13 17:12:15"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/stats","service":"default-service-name","timestamp":"2026-10-13 17:12:15"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/staff?page=1&limit=10","service":"default-service-name","timestamp":"2026-10-13 17:12:19"}
+{"level":"info","message":"Incoming request: GET /api/v1/admin/staff?page=1&limit=10","service":"default-service-name","timestamp":"2026-10-13 17:12:19"}

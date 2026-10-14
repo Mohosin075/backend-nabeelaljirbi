@@ -63,6 +63,7 @@ const auth = (...roles: string[]) => {
         ...verifiedUser,
         ...user,
         role: effectiveRole,
+        adminTier: user.adminTier || (verifiedUser as any).adminTier || "SUPER_ADMIN",
       };
 
       next();

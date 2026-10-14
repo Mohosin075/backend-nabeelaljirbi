@@ -71,10 +71,9 @@ const getClinics = catchAsync(async (req: Request, res: Response) => {
 
 const AdminClinicVerified = catchAsync(async (req: Request, res: Response) => {
   const { clinicId } = req.params;
-
   const { adminVerified } = req.body;
 
-  const result = await AdminService.AdminClinicVerified(clinicId, adminVerified);
+  const result = await AdminService.AdminClinicVerified(clinicId, adminVerified, (req as any).user);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -86,10 +85,9 @@ const AdminClinicVerified = catchAsync(async (req: Request, res: Response) => {
 
 const bannedUser = catchAsync(async (req: Request, res: Response) => {
   const { userId } = req.params;
+  const { banned, reason } = req.body;
 
-  const { banned } = req.body;
-
-  const result = await AdminService.bannedUser(userId, banned);
+  const result = await AdminService.bannedUser(userId, banned, reason, (req as any).user);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -129,10 +127,9 @@ const getClinicPlatformSubscription = catchAsync(async (req: Request, res: Respo
 
 const SetServiceFree = catchAsync(async (req: Request, res: Response) => {
   const { userId } = req.params;
-
   const { serviceFree } = req.body;
 
-  const result = await AdminService.SetServiceFree(userId, serviceFree);
+  const result = await AdminService.SetServiceFree(userId, serviceFree, (req as any).user);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -143,10 +140,9 @@ const SetServiceFree = catchAsync(async (req: Request, res: Response) => {
 });
 
 const updateWallet = catchAsync(async (req: Request, res: Response) => {
-
   const { amount, userId } = req.body;
 
-  const result = await AdminService.updateWallet(userId, amount);
+  const result = await AdminService.updateWallet(userId, amount, (req as any).user);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -157,7 +153,7 @@ const updateWallet = catchAsync(async (req: Request, res: Response) => {
 });
 
 const patientNotification = catchAsync(async (req: Request, res: Response) => {
-  const result = await AdminService.createPatientNotification(req.body);
+  const result = await AdminService.createPatientNotification(req.body, (req as any).user);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -168,7 +164,7 @@ const patientNotification = catchAsync(async (req: Request, res: Response) => {
 });
 
 const clinicNotification = catchAsync(async (req: Request, res: Response) => {
-  const result = await AdminService.createClinicNotification(req.body);
+  const result = await AdminService.createClinicNotification(req.body, (req as any).user);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -180,9 +176,9 @@ const clinicNotification = catchAsync(async (req: Request, res: Response) => {
 
 const suspendDoctor = catchAsync(async (req: Request, res: Response) => {
   const { doctorId } = req.params;
-  const { suspended } = req.body;
+  const { suspended, reason } = req.body;
 
-  const result = await AdminService.suspendDoctor(doctorId, suspended !== false);
+  const result = await AdminService.suspendDoctor(doctorId, suspended !== false, reason, (req as any).user);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -194,9 +190,9 @@ const suspendDoctor = catchAsync(async (req: Request, res: Response) => {
 
 const suspendClinic = catchAsync(async (req: Request, res: Response) => {
   const { clinicId } = req.params;
-  const { suspended } = req.body;
+  const { suspended, reason } = req.body;
 
-  const result = await AdminService.suspendClinic(clinicId, suspended !== false);
+  const result = await AdminService.suspendClinic(clinicId, suspended !== false, reason, (req as any).user);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -220,7 +216,8 @@ const overrideAppointmentStatus = catchAsync(async (req: Request, res: Response)
   const result = await AdminService.overrideAppointmentStatus(
     appointmentId,
     status,
-    reason
+    reason,
+    (req as any).user
   );
 
   sendResponse(res, {

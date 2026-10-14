@@ -424,6 +424,7 @@ const getManagerBookingHistory = catchAsync(
       "status",
       "doctorId",
       "consultDate",
+      "clinicId",
     ]);
 
     const result = await ClinicService.getManagerBookingHistory(
@@ -445,7 +446,16 @@ const getClinicManagerDoctor = catchAsync(
   async (req: Request, res: Response) => {
     const clinicId = req.user.id;
     const options = pick(req.query, paginationFields);
-    const filters = pick(req.query, ["searchTerm", "status", "doctorId"]);
+    const filters = pick(req.query, [
+      "searchTerm",
+      "status",
+      "doctorId",
+      "clinicId",
+      "search",
+      "rating",
+      "consultFee",
+      "specialty",
+    ]);
 
     const result = await ClinicService.getClinicManagerDoctor(
       clinicId,
@@ -555,6 +565,7 @@ const getClinicReconciliationReports = catchAsync(
   async (req: Request, res: Response) => {
     const userId = req.user.id;
     const filters = pick(req.query, [
+      "clinicId",
       "doctorId",
       "period",
       "startDate",

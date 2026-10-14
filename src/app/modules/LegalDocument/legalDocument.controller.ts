@@ -33,6 +33,7 @@ const getActiveDocument = catchAsync(async (req: Request, res: Response) => {
 // 2. Publish new version (Admin)
 const publishNewVersion = catchAsync(async (req: Request, res: Response) => {
   const payload = req.body;
+  const currentAdmin = (req as any).user;
 
   if (!payload.role || !payload.title || !payload.content || !payload.version) {
     throw new ApiError(
@@ -41,7 +42,7 @@ const publishNewVersion = catchAsync(async (req: Request, res: Response) => {
     );
   }
 
-  const result = await LegalDocumentService.publishNewVersion(payload);
+  const result = await LegalDocumentService.publishNewVersion(payload, currentAdmin);
 
   sendResponse(res, {
     statusCode: httpStatus.CREATED,

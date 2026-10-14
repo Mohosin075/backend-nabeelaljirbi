@@ -6,7 +6,8 @@ import sendResponse from "../../../shared/sendResponse";
 import { PrepaidCardService } from "./prepaidCard.service";
 
 const createPrepaidCard = catchAsync(async (req: Request, res: Response) => {
-  const result = await PrepaidCardService.createPrepaidCard(req.body);
+  const currentAdmin = (req as any).user;
+  const result = await PrepaidCardService.createPrepaidCard(req.body, currentAdmin);
 
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
@@ -57,7 +58,8 @@ const updatePrepaidCard = catchAsync(async (req: Request, res: Response) => {
 });
 
 const deletePrepaidCard = catchAsync(async (req: Request, res: Response) => {
-  const result = await PrepaidCardService.deletePrepaidCard(req.params.id);
+  const currentAdmin = (req as any).user;
+  const result = await PrepaidCardService.deletePrepaidCard(req.params.id, currentAdmin);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
