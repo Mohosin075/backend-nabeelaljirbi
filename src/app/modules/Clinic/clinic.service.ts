@@ -147,6 +147,7 @@ const updateClinicProfile = async (userId: string, payload: any) => {
             location: payload.location,
             latitude: payload.latitude,
             longitude: payload.longitude,
+            timezone: payload.timezone || "Africa/Tripoli",
           },
           update: {
             ...(payload.managerName && { managerName: payload.managerName }),
@@ -158,6 +159,7 @@ const updateClinicProfile = async (userId: string, payload: any) => {
             ...(payload.location && { location: payload.location }),
             ...(payload.latitude && { latitude: payload.latitude }),
             ...(payload.longitude && { longitude: payload.longitude }),
+            ...(payload.timezone && { timezone: payload.timezone }),
           },
         },
       },
@@ -188,6 +190,7 @@ const updateClinicProfile = async (userId: string, payload: any) => {
           location: true,
           latitude: true,
           longitude: true,
+          timezone: true,
         },
       },
     },

@@ -2,6 +2,7 @@ import { bookingNotificationQueue, appointmentLifecycleQueue } from '../queues/b
 import { redis } from '../../../helpars/redisServer';
 import { BookingStatus } from '@prisma/client';
 import prisma from '../../../shared/prisma';
+import { getAppointmentStartUTC, DEFAULT_CLINIC_TIMEZONE } from '../../../utils/timezoneHelper';
 
 /**
  * 🌍 CRITICAL UTC NOTE:
@@ -64,17 +65,17 @@ interface ScheduleConfirmedTimeoutParams {
 
 /**
  * Calculate delay in ms for notification reminders (X hours before appointment).
- * 🌍 IMPORTANT: All times are UTC. consultDate is stored as UTC from DB,
- * startTime is interpreted as UTC HH:MM format.
+ * Deadlines are computed against the clinic's local IANA timezone without hardcoded offsets.
  */
-function calculateDelay(consultDate: Date, startTime: string, hoursBeforeAppointment: number): number {
-  const [hours, minutes] = startTime.split(':').map(Number);
-  const appointmentDateTime = new Date(consultDate);
-  // Use setUTCHours() to ensure UTC timezone is applied
-  appointmentDateTime.setUTCHours(hours, minutes, 0, 0);
-
+function calculateDelay(
+  consultDate: Date,
+  startTime: string,
+  hoursBeforeAppointment: number,
+  timeZone: string = DEFAULT_CLINIC_TIMEZONE
+): number {
+  const appointmentUTC = getAppointmentStartUTC(consultDate, startTime, timeZone);
   const notificationTime = new Date(
-    appointmentDateTime.getTime() - hoursBeforeAppointment * 60 * 60 * 1000
+    appointmentUTC.getTime() - hoursBeforeAppointment * 60 * 60 * 1000
   );
 
   const delay = notificationTime.getTime() - Date.now();
@@ -108,26 +109,13 @@ function parseTimeParts(time: string): { hours: number; minutes: number; seconds
   return { hours, minutes, seconds };
 }
 
-function calculatePendingTimeoutAt(consultDate: Date, endTime: string): Date {
-  const { hours, minutes, seconds } = parseTimeParts(endTime);
-
-  // Use UTC methods so the calculation is timezone-agnostic.
-  // 🌍 CRITICAL UTC LOGIC:
-  // - consultDate from DB is stored as UTC midnight (00:00:00 UTC)
-  // - endTime is stored as HH:MM:SS in UTC format (from doctor's working slot)
-  // - We calculate the slot end moment in UTC by setting UTC hours/minutes/seconds
-  // - This ensures the timeout fires at the correct UTC moment regardless of server timezone
-  const slotEndAt = new Date(consultDate);
-  slotEndAt.setUTCHours(hours, minutes, seconds, 0);
-
-  // If applying the time lands at or before midnight UTC of the same day (e.g. endTime = '00:00:00'),
-  // advance by one day to avoid an instant or negative delay.
-  const midnightUTC = new Date(consultDate);
-  midnightUTC.setUTCHours(0, 0, 0, 0);
-  if (slotEndAt.getTime() <= midnightUTC.getTime()) {
-    slotEndAt.setUTCDate(slotEndAt.getUTCDate() + 1);
-  }
-
+function calculatePendingTimeoutAt(
+  consultDate: Date,
+  endTime: string,
+  timeZone: string = DEFAULT_CLINIC_TIMEZONE
+): Date {
+  // Compute slot end authoritative UTC moment from clinic local time
+  const slotEndAt = getAppointmentStartUTC(consultDate, endTime, timeZone);
   return new Date(slotEndAt.getTime() + PENDING_TIMEOUT_GRACE_MINUTES * 60 * 1000);
 }
 
@@ -149,8 +137,19 @@ export async function scheduleBookingNotifications(
   }
 
   try {
-    const delay24Hours = calculateDelay(new Date(consultDate), startTime, 24);
-    const delay3Hours = calculateDelay(new Date(consultDate), startTime, 3);
+    let timeZone = DEFAULT_CLINIC_TIMEZONE;
+    if (clinicId) {
+      const clinic = await prisma.clinic.findUnique({
+        where: { id: clinicId },
+        select: { timezone: true },
+      });
+      if (clinic?.timezone) {
+        timeZone = clinic.timezone;
+      }
+    }
+
+    const delay24Hours = calculateDelay(new Date(consultDate), startTime, 24, timeZone);
+    const delay3Hours = calculateDelay(new Date(consultDate), startTime, 3, timeZone);
     const jobIds: string[] = [];
 
     if (delay24Hours > 0) {
@@ -249,7 +248,18 @@ export async function schedulePendingBookingTimeout(
 
   try {
     const now = Date.now();
-    const pendingTimeoutAt = calculatePendingTimeoutAt(new Date(consultDate), endTime);
+    let timeZone = DEFAULT_CLINIC_TIMEZONE;
+    if (appointmentId) {
+      const appt = await prisma.bookingAppointment.findUnique({
+        where: { id: appointmentId },
+        select: { clinic: { select: { timezone: true } } },
+      });
+      if (appt?.clinic?.timezone) {
+        timeZone = appt.clinic.timezone;
+      }
+    }
+
+    const pendingTimeoutAt = calculatePendingTimeoutAt(new Date(consultDate), endTime, timeZone);
     const delay = Math.max(0, pendingTimeoutAt.getTime() - now);
     const jobId = buildBullJobId(appointmentId, 'pending-timeout');
     const previousJobId = await redis.get(`${REDIS_PENDING_TIMEOUT_PREFIX}${appointmentId}`);
@@ -328,17 +338,12 @@ export async function cancelPendingBookingTimeout(appointmentId: string): Promis
 // If still CONFIRMED/INPROGRESS → NOT_SHOW. Admin keeps all fees.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function calculateConfirmedTimeoutAt(consultDate: Date, endTime: string): Date {
-  const { hours, minutes, seconds } = parseTimeParts(endTime);
-  const slotEndAt = new Date(consultDate);
-  slotEndAt.setUTCHours(hours, minutes, seconds, 0);
-
-  const midnightUTC = new Date(consultDate);
-  midnightUTC.setUTCHours(0, 0, 0, 0);
-  if (slotEndAt.getTime() <= midnightUTC.getTime()) {
-    slotEndAt.setUTCDate(slotEndAt.getUTCDate() + 1);
-  }
-
+function calculateConfirmedTimeoutAt(
+  consultDate: Date,
+  endTime: string,
+  timeZone: string = DEFAULT_CLINIC_TIMEZONE
+): Date {
+  const slotEndAt = getAppointmentStartUTC(consultDate, endTime, timeZone);
   // 🌍 Section 5: Unresolved confirmed appointment auto-settles 12 hours after period end
   return new Date(slotEndAt.getTime() + 12 * 60 * 60 * 1000);
 }
@@ -364,7 +369,18 @@ export async function scheduleConfirmedBookingTimeout(
 
   try {
     const now = Date.now();
-    const fireAt = calculateConfirmedTimeoutAt(new Date(consultDate), endTime);
+    let timeZone = DEFAULT_CLINIC_TIMEZONE;
+    if (clinicId) {
+      const clinic = await prisma.clinic.findUnique({
+        where: { id: clinicId },
+        select: { timezone: true },
+      });
+      if (clinic?.timezone) {
+        timeZone = clinic.timezone;
+      }
+    }
+
+    const fireAt = calculateConfirmedTimeoutAt(new Date(consultDate), endTime, timeZone);
     const delay = Math.max(0, fireAt.getTime() - now);
 
     const jobId = buildBullJobId(appointmentId, 'confirmed-timeout');

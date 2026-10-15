@@ -299,6 +299,7 @@ model Clinic {
   advanceBookingDays    Int     @default(14)
   serviceFeePercentage  Float   @default(10.0)
   isVisible             Boolean @default(true)
+  timezone              String  @default("Africa/Tripoli")
 
   specialists         ClinicSpecialist[]
   insurances          ClinicInsurance[]
@@ -315,6 +316,7 @@ model Clinic {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([timezone])
   @@map("clinics")
 }
 
@@ -531,6 +533,8 @@ model BookingAppointment {
   @@index([doctorId])
   @@index([patientId])
   @@index([status])
+  @@index([workingSlotId, consultDate, status])
+  @@index([doctorId, clinicId, consultDate, status])
   @@map("booking_appointments")
 }
 

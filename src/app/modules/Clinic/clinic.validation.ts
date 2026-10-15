@@ -12,6 +12,7 @@ const updateClinicProfileValidationSchema = z.object({
   location: z.string().optional(),
   latitude: z.number().optional(),
   longitude: z.number().optional(),
+  timezone: z.string().optional(),
 });
 
 const createClinicSpecialistValidationSchema = z.object({

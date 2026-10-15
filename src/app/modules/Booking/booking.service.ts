@@ -8,6 +8,7 @@ import { BookingSchedulerService } from "../../jobs/services/bookingScheduler.se
 import { broadcastBookingUpdate } from "../../../helpars/socket/socketHandler";
 import { Notification } from "../Notification/notification.service";
 import { NotificationTemplateService } from "../NotificationTemplate/notificationTemplate.service";
+import { checkCancellationAllowed } from "../../../utils/timezoneHelper";
 
 /**
  * 4 — Booking Flow
@@ -201,64 +202,6 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
   const dayEnd = new Date(targetDate);
   dayEnd.setUTCHours(23, 59, 59, 999);
 
-  // Count existing bookings for this doctor, clinic, date, and workingSlot
-  const existingActiveBookingsCount = await prisma.bookingAppointment.count({
-    where: {
-      doctorId,
-      clinicId: effectiveClinicId,
-      workingSlotId: workingSlot.id,
-      consultDate: {
-        gte: dayStart,
-        lte: dayEnd,
-      },
-      status: {
-        in: [
-          BookingStatus.PENDING,
-          BookingStatus.CONFIRMED,
-          BookingStatus.INPROGRESS,
-          BookingStatus.ARRIVED,
-        ],
-      },
-    },
-  });
-
-  if (existingActiveBookingsCount >= workingSlot.capacity) {
-    throw new ApiError(
-      httpStatus.BAD_REQUEST,
-      `Working period (${workingSlot.startTime} - ${workingSlot.endTime}) capacity of ${workingSlot.capacity} patients is full`
-    );
-  }
-
-  // Next queue/serial number
-  const serialNumber = existingActiveBookingsCount + 1;
-
-  // Approximate estimated time derivation (clearly marked as estimate)
-  let approximateEstimatedTime: string | null = null;
-  if (workingSlot.startTime) {
-    const [startH, startM] = workingSlot.startTime.split(":").map(Number);
-    // Rough estimate: spread evenly across slot duration if multiple capacity
-    if (workingSlot.endTime) {
-      const [endH, endM] = workingSlot.endTime.split(":").map(Number);
-      const totalMinutes = endH * 60 + endM - (startH * 60 + startM);
-      if (totalMinutes > 0 && workingSlot.capacity > 0) {
-        const avgMinutesPerPatient = Math.max(
-          10,
-          Math.floor(totalMinutes / workingSlot.capacity)
-        );
-        const estMinutes =
-          startH * 60 + startM + (serialNumber - 1) * avgMinutesPerPatient;
-        const estH = Math.floor(estMinutes / 60) % 24;
-        const estM = estMinutes % 60;
-        approximateEstimatedTime = `${String(estH).padStart(2, "0")}:${String(
-          estM
-        ).padStart(2, "0")}`;
-      }
-    }
-    if (!approximateEstimatedTime) {
-      approximateEstimatedTime = workingSlot.startTime;
-    }
-  }
-
   // 7. Financial calculation: Percentage-based service fee and Collection Mode
   const consultFee = doctor.consultFee || 0;
   const serviceFeePercentage = clinic.serviceFeePercentage || 10.0;
@@ -268,8 +211,6 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
   const collectionMode = clinic.collectionMode || "MODE_A";
 
   // Section 6: Clinic-side percentage-based service fee lifecycle
-  // "This governs the patient's service fee and any per-booking fee charged to a clinic alike;
-  // the clinic-side mechanism exists in V1 but needs rebuilding against this lifecycle and the percentage-based calculation."
   const clinicServiceFee = !clinic.trial
     ? Number(((consultFee * serviceFeePercentage) / 100).toFixed(2))
     : 0;
@@ -295,8 +236,65 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
     );
   }
 
-  // 9. Execute transaction: Freeze wallet hold & create booking request
+  // 9. Execute transaction: Atomically verify capacity, freeze wallet hold & create booking request
   const booking = await prisma.$transaction(async (tx) => {
+    // Atomic capacity check inside transaction to prevent race conditions & overbooking
+    const existingActiveBookingsCount = await tx.bookingAppointment.count({
+      where: {
+        doctorId,
+        clinicId: effectiveClinicId,
+        workingSlotId: workingSlot.id,
+        consultDate: {
+          gte: dayStart,
+          lte: dayEnd,
+        },
+        status: {
+          in: [
+            BookingStatus.PENDING,
+            BookingStatus.CONFIRMED,
+            BookingStatus.INPROGRESS,
+            BookingStatus.ARRIVED,
+          ],
+        },
+      },
+    });
+
+    if (existingActiveBookingsCount >= workingSlot.capacity) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        `Working period (${workingSlot.startTime} - ${workingSlot.endTime}) capacity of ${workingSlot.capacity} patients is full`
+      );
+    }
+
+    // Atomic next queue/serial number
+    const serialNumber = existingActiveBookingsCount + 1;
+
+    // Approximate estimated time derivation (clearly marked as estimate)
+    let approximateEstimatedTime: string | null = null;
+    if (workingSlot.startTime) {
+      const [startH, startM] = workingSlot.startTime.split(":").map(Number);
+      if (workingSlot.endTime) {
+        const [endH, endM] = workingSlot.endTime.split(":").map(Number);
+        const totalMinutes = endH * 60 + endM - (startH * 60 + startM);
+        if (totalMinutes > 0 && workingSlot.capacity > 0) {
+          const avgMinutesPerPatient = Math.max(
+            10,
+            Math.floor(totalMinutes / workingSlot.capacity)
+          );
+          const estMinutes =
+            startH * 60 + startM + (serialNumber - 1) * avgMinutesPerPatient;
+          const estH = Math.floor(estMinutes / 60) % 24;
+          const estM = estMinutes % 60;
+          approximateEstimatedTime = `${String(estH).padStart(2, "0")}:${String(
+            estM
+          ).padStart(2, "0")}`;
+        }
+      }
+      if (!approximateEstimatedTime) {
+        approximateEstimatedTime = workingSlot.startTime;
+      }
+    }
+
     // Freeze the patient hold amount
     if (holdAmount > 0) {
       await tx.user.update({
@@ -1048,29 +1046,33 @@ const cancelBooking = async (
     booking.status === BookingStatus.ARRIVED ||
     booking.status === BookingStatus.INPROGRESS
   ) {
+    // Prevent double refunds (idempotency guard)
+    if (booking.refundPatient || booking.returnPatientBalance) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        "Refund has already been processed for this appointment"
+      );
+    }
+
     // 1. Patient-initiated cancellation: enforce 12-hour cutoff rule (Section 6)
     // "Patient-initiated cancellation is cancel-and-rebook: available up to 12 hours before the appointment, hard-blocked server-side after that point."
+    // Dynamically computed against clinic's IANA timezone with no hardcoded offsets
     if (isPatient) {
-      const consultDate = new Date(booking.consultDate);
-      let consultHour = 0;
-      let consultMinute = 0;
-      if (booking.startTime) {
-        const parts = booking.startTime.split(":");
-        if (parts.length >= 2) {
-          consultHour = parseInt(parts[0], 10) || 0;
-          consultMinute = parseInt(parts[1], 10) || 0;
-        }
-      }
-      consultDate.setUTCHours(consultHour, consultMinute, 0, 0);
+      const clinicTz = (booking.clinic as any)?.timezone || "Africa/Tripoli";
+      const { isAllowed, hoursRemaining } = checkCancellationAllowed(
+        booking.consultDate,
+        booking.startTime,
+        clinicTz,
+        12
+      );
 
-      const now = new Date();
-      const diffMs = consultDate.getTime() - now.getTime();
-      const diffHours = diffMs / (1000 * 60 * 60);
-
-      if (diffHours < 12) {
+      if (!isAllowed) {
         throw new ApiError(
           httpStatus.BAD_REQUEST,
-          "Appointments can only be cancelled at least 12 hours prior to the scheduled time"
+          `Appointments can only be cancelled at least 12 hours prior to the scheduled time in clinic local time (${clinicTz}). Current hours remaining: ${Math.max(
+            0,
+            hoursRemaining
+          ).toFixed(1)}h`
         );
       }
     }
@@ -1339,6 +1341,28 @@ const cancelBooking = async (
 };
 
 const completeBooking = async (appointmentId: string) => {
+  const existing = await prisma.bookingAppointment.findUnique({
+    where: { id: appointmentId },
+  });
+
+  if (!existing) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Appointment not found");
+  }
+
+  // Enforce valid state transitions: complete can only occur from CONFIRMED, INPROGRESS, or ARRIVED
+  const validPriorStatuses: BookingStatus[] = [
+    BookingStatus.CONFIRMED,
+    BookingStatus.INPROGRESS,
+    BookingStatus.ARRIVED,
+  ];
+
+  if (!validPriorStatuses.includes(existing.status)) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      `Cannot complete appointment with status ${existing.status}. Valid statuses for completion: ${validPriorStatuses.join(", ")}`
+    );
+  }
+
   const booking = await prisma.bookingAppointment.update({
     where: { id: appointmentId },
     data: { status: BookingStatus.COMPLETE },
