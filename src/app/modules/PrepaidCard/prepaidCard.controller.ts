@@ -18,7 +18,7 @@ const createPrepaidCard = catchAsync(async (req: Request, res: Response) => {
 });
 
 const getAllPrepaidCards = catchAsync(async (req: Request, res: Response) => {
-  const filters = pick(req.query, ["searchTerm", "used"]);
+  const filters = pick(req.query, ["searchTerm", "used", "amount"]);
   const options = pick(req.query, ["limit", "page", "sortBy", "sortOrder"]);
 
   const result = await PrepaidCardService.getAllPrepaidCards(filters, options);
@@ -29,6 +29,17 @@ const getAllPrepaidCards = catchAsync(async (req: Request, res: Response) => {
     message: "Prepaid cards retrieved successfully",
     meta: result.meta,
     data: result.data,
+  });
+});
+
+const getDistinctDenominations = catchAsync(async (req: Request, res: Response) => {
+  const result = await PrepaidCardService.getDistinctDenominations();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Prepaid card denominations retrieved successfully",
+    data: result,
   });
 });
 
@@ -69,12 +80,21 @@ const deletePrepaidCard = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
-const purchasePrepaidCard = catchAsync(async (req: Request, res: Response) => {
-  const user = req.user as any; 
-  // Assuming req.user is populated by auth middleware. 
-  // However, if the middleware puts it in req.user, I need to be sure it's there. 
-  // Usually strict typing requires a custom definition or using (req as any).user.
+const bulkDeletePrepaidCards = catchAsync(async (req: Request, res: Response) => {
+  const currentAdmin = (req as any).user;
+  const { ids } = req.body;
+  const result = await PrepaidCardService.bulkDeletePrepaidCards(ids, currentAdmin);
 
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: result.message,
+    data: result,
+  });
+});
+
+const purchasePrepaidCard = catchAsync(async (req: Request, res: Response) => {
+  const user = (req as any).user;
   const result = await PrepaidCardService.purchasePrepaidCard(user.id, req.body);
 
   sendResponse(res, {
@@ -101,18 +121,41 @@ const getTopPurchaseList = catchAsync(async (req: Request, res: Response) => {
 });
 
 const exportPrepaidCards = catchAsync(async (req: Request, res: Response) => {
-  const buffer = await PrepaidCardService.exportPrepaidCardsToExcel();
-  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition", 'attachment; filename="prepaid_cards.xlsx"');
-  res.send(buffer);
+  const filters = pick(req.query, ["searchTerm", "used", "amount"]);
+  let ids: string[] | undefined;
+
+  if (req.query.ids) {
+    if (Array.isArray(req.query.ids)) {
+      ids = req.query.ids as string[];
+    } else {
+      ids = (req.query.ids as string).split(",").map((id) => id.trim()).filter(Boolean);
+    }
+  }
+
+  const buffer = await PrepaidCardService.exportPrepaidCardsToExcel({
+    ...filters,
+    ids,
+  });
+
+  res.setHeader(
+    "Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  );
+  res.setHeader(
+    "Content-Disposition",
+    'attachment; filename="prepaid_cards.xlsx"'
+  );
+  res.status(httpStatus.OK).send(buffer);
 });
 
 export const PrepaidCardController = {
   createPrepaidCard,
   getAllPrepaidCards,
+  getDistinctDenominations,
   getPrepaidCardById,
   updatePrepaidCard,
   deletePrepaidCard,
+  bulkDeletePrepaidCards,
   purchasePrepaidCard,
   getTopPurchaseList,
   exportPrepaidCards,

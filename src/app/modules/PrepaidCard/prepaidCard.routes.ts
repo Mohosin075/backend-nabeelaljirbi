@@ -10,7 +10,7 @@ router.post(
   "/create",
   auth(UserRole.ADMIN),
   adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
-  PrepaidCardController.createPrepaidCard,
+  PrepaidCardController.createPrepaidCard
 );
 
 router.post("/top-up", auth(), PrepaidCardController.purchasePrepaidCard);
@@ -18,43 +18,57 @@ router.post("/top-up", auth(), PrepaidCardController.purchasePrepaidCard);
 router.get(
   "/top-up-purchase-list",
   auth(UserRole.ADMIN),
-  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
-  PrepaidCardController.getTopPurchaseList,
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.READ_ONLY),
+  PrepaidCardController.getTopPurchaseList
+);
+
+router.get(
+  "/denominations",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.READ_ONLY),
+  PrepaidCardController.getDistinctDenominations
 );
 
 router.get(
   "/",
   auth(UserRole.ADMIN),
-  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
-  PrepaidCardController.getAllPrepaidCards,
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.READ_ONLY),
+  PrepaidCardController.getAllPrepaidCards
 );
 
 router.get(
   "/export",
   auth(UserRole.ADMIN),
-  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.READ_ONLY),
   PrepaidCardController.exportPrepaidCards
+);
+
+router.post(
+  "/bulk-delete",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
+  PrepaidCardController.bulkDeletePrepaidCards
 );
 
 router.get(
   "/:id",
   auth(UserRole.ADMIN),
-  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
-  PrepaidCardController.getPrepaidCardById,
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.READ_ONLY),
+  PrepaidCardController.getPrepaidCardById
 );
 
 router.patch(
   "/update/:id",
   auth(UserRole.ADMIN),
   adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
-  PrepaidCardController.updatePrepaidCard,
+  PrepaidCardController.updatePrepaidCard
 );
 
 router.delete(
   "/delete/:id",
   auth(UserRole.ADMIN),
   adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
-  PrepaidCardController.deletePrepaidCard,
+  PrepaidCardController.deletePrepaidCard
 );
 
 export const PrepaidCardRoutes = router;

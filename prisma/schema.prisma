@@ -778,6 +778,9 @@ model PrepaidCard {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([amount])
+  @@index([used])
+  @@index([createdAt])
   @@map("prepaid_cards")
 }
 
