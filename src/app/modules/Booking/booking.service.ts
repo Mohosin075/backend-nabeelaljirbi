@@ -126,7 +126,8 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
 
-  const maxDays = clinic.advanceBookingDays || 14;
+  const platformBookingSetting = await prisma.platformBookingSetting.findFirst();
+  const maxDays = clinic.advanceBookingDays || platformBookingSetting?.advanceBookingDays || 14;
   const maxAllowedDate = new Date(today);
   maxAllowedDate.setUTCDate(maxAllowedDate.getUTCDate() + maxDays);
   maxAllowedDate.setUTCHours(23, 59, 59, 999);
@@ -1058,18 +1059,20 @@ const cancelBooking = async (
     // "Patient-initiated cancellation is cancel-and-rebook: available up to 12 hours before the appointment, hard-blocked server-side after that point."
     // Dynamically computed against clinic's IANA timezone with no hardcoded offsets
     if (isPatient) {
+      const platformBookingSetting = await prisma.platformBookingSetting.findFirst();
+      const cutoffHours = platformBookingSetting?.cancellationCutoffHours ?? 12;
       const clinicTz = (booking.clinic as any)?.timezone || "Africa/Tripoli";
       const { isAllowed, hoursRemaining } = checkCancellationAllowed(
         booking.consultDate,
         booking.startTime,
         clinicTz,
-        12
+        cutoffHours
       );
 
       if (!isAllowed) {
         throw new ApiError(
           httpStatus.BAD_REQUEST,
-          `Appointments can only be cancelled at least 12 hours prior to the scheduled time in clinic local time (${clinicTz}). Current hours remaining: ${Math.max(
+          `Appointments can only be cancelled at least ${cutoffHours} hours prior to the scheduled time in clinic local time (${clinicTz}). Current hours remaining: ${Math.max(
             0,
             hoursRemaining
           ).toFixed(1)}h`
