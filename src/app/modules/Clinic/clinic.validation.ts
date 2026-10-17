@@ -30,23 +30,27 @@ const createPhotoGalleryValidationSchema = z.object({
 });
 
 const updateBookingStatusValidationSchema = z.object({
-  bookingId: z.string({ required_error: "Booking ID is required" }),
-  status: z.enum([
-    "CONFIRMED",
-    "ARRIVED",
-    "INPROGRESS",
-    "COMPLETE",
-    "NOT_SHOW",
-    "CANCELLED",
-    "REJECTED",
-  ]),
-  reason: z.string().optional(),
+  body: z.object({
+    bookingId: z.string({ required_error: "Booking ID is required" }),
+    status: z.enum([
+      "CONFIRMED",
+      "ARRIVED",
+      "INPROGRESS",
+      "COMPLETE",
+      "NOT_SHOW",
+      "CANCELLED",
+      "REJECTED",
+    ]),
+    reason: z.string().optional(),
+  }),
 });
 
 const executeDoctorAbsenceValidationSchema = z.object({
-  doctorId: z.string({ required_error: "Doctor ID is required" }),
-  date: z.string({ required_error: "Date is required (YYYY-MM-DD)" }),
-  reason: z.string().optional(),
+  body: z.object({
+    doctorId: z.string({ required_error: "Doctor ID is required" }),
+    date: z.string({ required_error: "Date is required (YYYY-MM-DD)" }),
+    reason: z.string().optional(),
+  }),
 });
 
 export const clinicValidation = {
