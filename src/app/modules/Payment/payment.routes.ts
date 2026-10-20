@@ -43,4 +43,16 @@ router.get(
   PaymentController.getClinicPlatformSubscription,
 );
 
+router.post(
+  "/doctor-platform-subscription",
+  auth(),
+  PaymentController.ClinicPlatformSubscription,
+);
+
+router.get(
+  "/doctor-platform-subscription",
+  auth(),
+  PaymentController.getClinicPlatformSubscription,
+);
+
 export const PaymentRoutes = router;

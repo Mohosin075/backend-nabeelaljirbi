@@ -112,7 +112,13 @@ router.get(
 
 router.patch(
   "/update/appointment-status",
-  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  auth(
+    UserRole.CLINIC,
+    UserRole.MANAGER,
+    UserRole.ADMIN,
+    UserRole.DOCTOR,
+    UserRole.PATIENT,
+  ),
   ClinicController.updateAppointmentStatus
 );
 

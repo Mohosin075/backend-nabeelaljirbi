@@ -298,6 +298,7 @@ const updateAppointmentStatus = catchAsync(
       bookingId,
       status,
       reason,
+      req.user?.role,
     );
 
     sendResponse(res, {

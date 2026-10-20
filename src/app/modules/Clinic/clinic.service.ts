@@ -921,7 +921,7 @@ const handleUnifiedStatusChange = async (
   bookingId: string,
   status: BookingStatus,
   userId: string,
-  role: "CLINIC" | "MANAGER" | "DOCTOR",
+  role: "CLINIC" | "MANAGER" | "DOCTOR" | "PATIENT" | "ADMIN",
   reason?: string,
 ) => {
   const appointment = await prisma.bookingAppointment.findUnique({
@@ -938,7 +938,9 @@ const handleUnifiedStatusChange = async (
   }
 
   // Authorization check
-  if (role === "CLINIC" && appointment.clinic?.userId !== userId) {
+  if (role === "ADMIN") {
+    // Admin has global override permission
+  } else if (role === "CLINIC" && appointment.clinic?.userId !== userId) {
     throw new ApiError(
       httpStatus.FORBIDDEN,
       "You are not authorized to update this appointment"
@@ -958,6 +960,23 @@ const handleUnifiedStatusChange = async (
       httpStatus.FORBIDDEN,
       "You are not authorized to update this appointment"
     );
+  } else if (role === "PATIENT") {
+    if (appointment.patient?.userId !== userId) {
+      throw new ApiError(
+        httpStatus.FORBIDDEN,
+        "You are not authorized to update this appointment"
+      );
+    }
+    if (
+      status !== BookingStatus.ARRIVED &&
+      status !== BookingStatus.COMPLETE &&
+      status !== BookingStatus.CANCELLED
+    ) {
+      throw new ApiError(
+        httpStatus.FORBIDDEN,
+        "Patients can only update appointment status to ARRIVED, COMPLETE, or CANCELLED"
+      );
+    }
   }
 
   // Terminal state protection: terminal states cannot be transitioned further
@@ -994,9 +1013,11 @@ const handleUnifiedStatusChange = async (
   if (status === BookingStatus.CONFIRMED) {
     result = await BookingService.confirmBooking(bookingId, userId);
   } else if (status === BookingStatus.CANCELLED) {
-    result = await BookingService.cancelBooking(bookingId, userId, "CLINIC", reason);
+    const caller = role === "DOCTOR" ? "DOCTOR" : role === "PATIENT" ? "PATIENT" : "CLINIC";
+    result = await BookingService.cancelBooking(bookingId, userId, caller, reason);
   } else if (status === BookingStatus.REJECTED) {
-    result = await BookingService.rejectBooking(bookingId, reason, "CLINIC");
+    const caller = role === "DOCTOR" ? "DOCTOR" : "CLINIC";
+    result = await BookingService.rejectBooking(bookingId, reason, caller);
   } else if (status === BookingStatus.COMPLETE) {
     result = await BookingService.completeBooking(bookingId);
   } else if (status === BookingStatus.ARRIVED) {
@@ -1103,8 +1124,13 @@ const updateAppointmentStatus = async (
   bookingId: string,
   status: BookingStatus,
   reason?: string,
+  userRole?: string,
 ) => {
-  return handleUnifiedStatusChange(bookingId, status, userId, "CLINIC", reason);
+  const mappedRole =
+    userRole === "DOCTOR" || userRole === "PATIENT" || userRole === "MANAGER" || userRole === "ADMIN"
+      ? (userRole as "DOCTOR" | "PATIENT" | "MANAGER" | "ADMIN")
+      : "CLINIC";
+  return handleUnifiedStatusChange(bookingId, status, userId, mappedRole, reason);
 };
 
 const managerUpdateAppointmentStatus = async (
