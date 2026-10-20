@@ -321,7 +321,7 @@ const adminLogin = async (payload: { email: string; password: string }) => {
 
   const user = await prisma.user.findFirst({
     where: {
-      role: 'ADMIN',
+      role: { in: ['ADMIN', 'CLINIC', 'MANAGER'] },
       email: {
         equals: cleanEmail,
         mode: 'insensitive',
@@ -330,17 +330,17 @@ const adminLogin = async (payload: { email: string; password: string }) => {
   });
 
   if (!user) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Admin account not found with this email");
+    throw new ApiError(httpStatus.NOT_FOUND, "Account not found with this email");
   }
 
   if (user.banned || user.status !== 'ACTIVE') {
-    throw new ApiError(httpStatus.FORBIDDEN, "Admin account is inactive or banned");
+    throw new ApiError(httpStatus.FORBIDDEN, "Account is inactive or banned");
   }
 
   if (!user.password) {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
-      "Admin password is not initialized. Please request a password reset."
+      "Password is not initialized for this account. Please login with OTP or request a password reset."
     );
   }
 
@@ -349,20 +349,20 @@ const adminLogin = async (payload: { email: string; password: string }) => {
     throw new ApiError(httpStatus.UNAUTHORIZED, "Invalid password");
   }
 
-  const { accessToken, refreshToken } = generateTokens(user, 'ADMIN');
+  const { accessToken, refreshToken } = generateTokens(user, user.role || 'ADMIN');
 
   await prisma.user.update({
     where: { id: user.id },
     data: { accessToken, refreshToken },
   });
 
-  const adminTier = user.adminTier || "SUPER_ADMIN";
+  const adminTier = user.role === 'ADMIN' ? (user.adminTier || "SUPER_ADMIN") : null;
 
   return {
-    message: "Admin login successfully",
+    message: `${user.role || 'User'} logged in successfully`,
     accessToken,
     refreshToken,
-    role: 'ADMIN',
+    role: user.role,
     adminTier,
     user: {
       id: user.id,
@@ -380,7 +380,7 @@ const forgotPassword = async (payload: { emailOrPhone: string }) => {
 
   const user = await prisma.user.findFirst({
     where: {
-      role: 'ADMIN',
+      role: { in: ['ADMIN', 'CLINIC', 'MANAGER'] },
       OR: [
         { email: { equals: cleanInput, mode: 'insensitive' } },
         { phoneNumber: cleanInput },
@@ -389,7 +389,7 @@ const forgotPassword = async (payload: { emailOrPhone: string }) => {
   });
 
   if (!user) {
-    throw new ApiError(httpStatus.NOT_FOUND, "No admin account found with provided email or phone");
+    throw new ApiError(httpStatus.NOT_FOUND, "No dashboard account found with provided email or phone");
   }
 
   const resetToken = Math.floor(100000 + Math.random() * 900000).toString();

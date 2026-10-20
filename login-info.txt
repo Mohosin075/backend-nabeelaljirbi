@@ -1,0 +1,105 @@
+================================================================================
+                     SALAMA APP — LOGIN CREDENTIALS & ACCESS GUIDE
+================================================================================
+
+--------------------------------------------------------------------------------
+1. QUICK REFERENCE TABLE
+--------------------------------------------------------------------------------
+ROLE / ACCOUNT         PHONE NUMBER     EMAIL ADDRESS           PASSWORD        DEV OTP   TARGET PORTAL
+------------------------------------------------------------------------------------------------------------------
+SUPER_ADMIN (Admin)    +8801981381386   web.mohosin@gmail.com   admin123456     123456    Web Dashboard (/dashboard/admin)
+CLINIC (Owner)         +8801744331874   clinic@gmail.com        admin123456     123456    Web Dashboard (/dashboard)
+MANAGER (Staff)        +8801744331875   manager@gmail.com       admin123456     123456    Web Dashboard (/dashboard)
+DOCTOR                 +8801744331872   doctor@gmail.com        (OTP Login)     123456    Mobile App (Flutter)
+PATIENT                +8801744331873   patient@gmail.com       (OTP Login)     123456    Mobile App (Flutter)
+------------------------------------------------------------------------------------------------------------------
+
+
+--------------------------------------------------------------------------------
+2. WEB DASHBOARD ACCOUNTS (DETAILS & SCOPE)
+--------------------------------------------------------------------------------
+
+A. SUPER_ADMIN (Central Platform Admin)
+   - Portal:       Web Dashboard
+   - Redirect URL: /dashboard/admin
+   - Email:        web.mohosin@gmail.com
+   - Phone:        +8801981381386
+   - Password:     admin123456
+   - Scope:        Full platform control. Can access all 22 admin modules, manage
+                   system settings, banners, verifications, and create/manage 
+                   Admin Staff across 5 Tiers from /dashboard/admin-staff.
+
+   * Note on the 5 Admin Tiers:
+     1. SUPER_ADMIN : Full master privileges across all modules.
+     2. OPERATIONS  : Manages clinics, doctors, patients, banners, bookings, verifications.
+     3. FINANCE     : Manages platform financials, wallets, settlements, and prepaid cards.
+     4. SUPPORT     : Handles complaints, blue badges, OTP channels, and patient issues.
+     5. READ_ONLY   : Inspect-only access across the platform; all actions/buttons locked.
+
+B. CLINIC (Clinic Owner / Head Administrator)
+   - Portal:       Web Dashboard
+   - Redirect URL: /dashboard
+   - Email:        clinic@gmail.com
+   - Phone:        +8801744331874
+   - Password:     admin123456
+   - Scope:        Full control over their clinic. Manages incoming booking requests,
+                   appointments, clinic doctors, schedules, payouts, financials & reports.
+
+C. MANAGER (Clinic Branch Staff / Frontdesk)
+   - Portal:       Web Dashboard
+   - Redirect URL: /dashboard
+   - Email:        manager@gmail.com
+   - Phone:        +8801744331875
+   - Password:     admin123456
+   - Scope:        Operational staff access. Can manage booking requests, clinic queue,
+                   schedules and doctors.
+                   (Financials and Reports are restricted for this role).
+
+
+--------------------------------------------------------------------------------
+3. MOBILE APP ACCOUNTS (FLUTTER)
+--------------------------------------------------------------------------------
+
+A. DOCTOR
+   - Portal:       Mobile App (Flutter)
+   - Phone:        +8801744331872
+   - Email:        doctor@gmail.com
+   - Dev OTP:      123456
+   - Scope:        Consultations, daily appointment schedules, patient medical logs.
+
+B. PATIENT
+   - Portal:       Mobile App (Flutter)
+   - Phone:        +8801744331873
+   - Email:        patient@gmail.com
+   - Dev OTP:      123456
+   - Scope:        Book clinic appointments, AI symptom chat, top-up prepaid cards.
+
+
+--------------------------------------------------------------------------------
+4. HOW TO LOG IN TO THE WEB DASHBOARD
+--------------------------------------------------------------------------------
+
+METHOD 1: EMAIL & PASSWORD (RECOMMENDED)
+   Step 1: Go to the Login Page (/login)
+   Step 2: Click on the "Email & Password" tab.
+   Step 3: Enter the Email address (e.g., clinic@gmail.com or web.mohosin@gmail.com).
+   Step 4: Enter the Password: admin123456
+   Step 5: Click "Sign In". You will be routed directly to your appropriate dashboard!
+
+METHOD 2: PHONE & OTP (ONE-TIME PASSWORD)
+   Step 1: Go to the Login Page (/login)
+   Step 2: On the "Phone (OTP)" tab, choose Country: Bangladesh (+880) or Libya (+218).
+   Step 3: Enter the Phone Number (e.g., 1744331874 or 1981381386).
+   Step 4: Click "Send Verification Code".
+   Step 5: On the OTP Screen, enter the Master Dev Code: 123456.
+
+
+--------------------------------------------------------------------------------
+5. IMPORTANT DEVELOPER NOTES
+--------------------------------------------------------------------------------
+- Master OTP: In development mode, the universal OTP code is "123456".
+- Default Password: For all dashboard users, the default password is "admin123456".
+- Direct URL Protection: If a user manually types a URL outside their role/tier
+  permissions, the frontend automatically intercepts it and displays the
+  "Access Restricted" notice with a safe return button.
+================================================================================

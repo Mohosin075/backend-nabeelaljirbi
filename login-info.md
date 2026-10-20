@@ -1,9 +1,60 @@
-রোল (Role)	ফোন নম্বর (BD Number)	ইমেইল (Email)	স্ট্যাটাস
-DOCTOR	+8801744331872	doctor@gmail.com	ACTIVE
-PATIENT	+8801744331873	patient@gmail.com	ACTIVE
-CLINIC	+8801744331874	clinic@gmail.com	ACTIVE
-MANAGER	+8801744331875	manager@gmail.com	ACTIVE
-SUPER ADMIN	+8801981381386	web.mohosin@gmail.com pass : admin123456	ACTIVE
+# SALAMA APP — Login Credentials & Access Guide
 
+## 1. Quick Reference Table
 
+| রোল (Role) | ফোন নম্বর (Phone) | ইমেইল (Email) | পাসওয়ার্ড (Password) | ওটিপি (Dev OTP) | পোর্টাল | টার্গেট রুট |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **SUPER_ADMIN** | `+8801981381386` | `web.mohosin@gmail.com` | `admin123456` | `123456` | Web Dashboard | `/dashboard/admin` |
+| **CLINIC** (Admin) | `+8801744331874` | `clinic@gmail.com` | `admin123456` | `123456` | Web Dashboard | `/dashboard` |
+| **MANAGER** (Staff) | `+8801744331875` | `manager@gmail.com` | `admin123456` | `123456` | Web Dashboard | `/dashboard` |
+| **DOCTOR** | `+8801744331872` | `doctor@gmail.com` | (OTP Login) | `123456` | Mobile App | Flutter App |
+| **PATIENT** | `+8801744331873` | `patient@gmail.com` | (OTP Login) | `123456` | Mobile App | Flutter App |
 
+---
+
+## 2. Web Dashboard Accounts (বিবরণ ও কাজের পরিধি)
+
+### ক. SUPER_ADMIN (সেন্ট্রাল প্ল্যাটফর্ম কন্ট্রোল প্যানেল)
+- **টার্গেট রুট:** `/dashboard/admin`
+- **ইমেইল:** `web.mohosin@gmail.com`
+- **পাসওয়ার্ড:** `admin123456`
+- **কাজের পরিধি:** প্ল্যাটফর্মের সব ২২টি মডিউলের সম্পূর্ণ নিয়ন্ত্রণ, ব্যানার, ব্লু ব্যাজ ভেরিফিকেশন, এবং `/dashboard/admin-staff` থেকে ৫টি টিয়ারের স্টাফ অ্যাকাউন্ট তৈরি ও পরিচালনা।
+  - `SUPER_ADMIN`: ফুল মাস্টার অ্যাক্সেস।
+  - `OPERATIONS`: ক্লিনিক, ডাক্তার, রোগী, ব্যানার, বুকিংস, ভেরিফিকেশন।
+  - `FINANCE`: ওয়ালেট, সেটেলমেন্ট, প্রিপেইড কার্ড ও আর্থিক রিপোর্ট।
+  - `SUPPORT`: অভিযোগ, ব্লু ব্যাজ, ওটিপি চ্যানেল ও সাপোর্ট।
+  - `READ_ONLY`: শুধুমাত্র দেখার অনুমতি; কোনো অ্যাকশন নেওয়া যাবে না।
+
+### খ. CLINIC (ক্লিনিক ওনার / প্রধান এডমিন)
+- **টার্গেট রুট:** `/dashboard`
+- **ইমেইল:** `clinic@gmail.com`
+- **পাসওয়ার্ড:** `admin123456`
+- **কাজের পরিধি:** ক্লিনিকের সম্পূর্ণ নিয়ন্ত্রণ। ইনকামিং বুকিং রিকোয়েস্ট অ্যাকসেপ্ট/রিজেক্ট, ডাক্তার রোস্টার, শিফট শিডিউল, সেটেলমেন্ট উইথড্রয়াল, আর্থিক হিসাব ও রিপোর্ট।
+
+### গ. MANAGER (ক্লিনিক শাখা স্টাফ / ফ্রন্টডেস্ক)
+- **টার্গেট রুট:** `/dashboard`
+- **ইমেইল:** `manager@gmail.com`
+- **পাসওয়ার্ড:** `admin123456`
+- **কাজের পরিধি:** অপারেশনাল কাজ। বুকিং রিকোয়েস্ট প্রসেস, ডাক্তার ও শিডিউল ম্যানেজ করা। *(ফাইন্যান্স ও রিপোর্ট দেখা তাদের জন্য বন্ধ)*।
+
+---
+
+## 3. Mobile App Accounts (Flutter)
+
+- **DOCTOR:** Phone: `+8801744331872` | Email: `doctor@gmail.com` | Dev OTP: `123456`
+- **PATIENT:** Phone: `+8801744331873` | Email: `patient@gmail.com` | Dev OTP: `123456`
+
+---
+
+## 4. ড্যাশবোর্ডে লগইন করার ২টি সহজ উপায়
+
+1. **ইমেইল ও পাসওয়ার্ড দিয়ে লগইন (Email & Password Tab):**
+   - লগইন পেজে `Email & Password` ট্যাবে যান।
+   - ইমেইল দিন (যেমন: `clinic@gmail.com` অথবা `web.mohosin@gmail.com`)।
+   - পাসওয়ার্ড দিন: `admin123456`।
+   - সাইন ইন করলে সরাসরি নিজ নিজ ড্যাশবোর্ডে নিয়ে যাবে।
+
+2. **ফোন নম্বর ও ওটিপি দিয়ে লগইন (Phone OTP Tab):**
+   - দেশ নির্বাচন করুন: Bangladesh (+880)।
+   - ফোন নম্বর দিন: `1744331874` (বা `1744331875` বা `1981381386`)।
+   - সেন্ড কোড দিন এবং ওটিপি স্ক্রিনে মাস্টার কোড দিন: `123456`।
