@@ -62,7 +62,7 @@ router.patch(
 router.get(
   "/financial-overview",
   auth(UserRole.ADMIN),
-  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.READ_ONLY),
   AdminController.getPlatformFinancialOverview
 );
 router.get(
@@ -76,13 +76,13 @@ router.get(
 router.get(
   "/patient-platform-subscription",
   auth(UserRole.ADMIN),
-  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.READ_ONLY),
   AdminController.getPatientPlatformSubscription
 );
 router.get(
   "/clinic-platform-subscription",
   auth(UserRole.ADMIN),
-  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.READ_ONLY),
   AdminController.getClinicPlatformSubscription
 );
 
@@ -136,11 +136,17 @@ router.patch(
   AdminController.toggleAdminStaffStatus
 );
 
-// 2. Audit Logs (Super Admin & Operations)
+// 2. Audit Logs (All Admin Tiers)
 router.get(
   "/audit-logs",
   auth(UserRole.ADMIN),
-  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
+  adminTierAuth(
+    AdminTier.SUPER_ADMIN,
+    AdminTier.OPERATIONS,
+    AdminTier.FINANCE,
+    AdminTier.SUPPORT,
+    AdminTier.READ_ONLY
+  ),
   AdminController.getAuditLogs
 );
 
@@ -175,12 +181,13 @@ router.patch(
 router.get(
   "/complaints",
   auth(UserRole.ADMIN),
-  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.SUPPORT, AdminTier.OPERATIONS),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.SUPPORT, AdminTier.OPERATIONS, AdminTier.READ_ONLY),
   AdminController.getComplaints
 );
 router.get(
   "/complaints/:complaintId",
   auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.SUPPORT, AdminTier.OPERATIONS, AdminTier.READ_ONLY),
   AdminController.getComplaintById
 );
 router.post(
