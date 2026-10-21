@@ -404,7 +404,7 @@ const getDoctorAppointments = catchAsync(
 
 const getClinics = catchAsync(async (req: Request, res: Response) => {
   const options = pick(req.query, paginationFields);
-  const filters = pick(req.query, ["searchTerm", "adminVerified"]);
+  const filters = pick(req.query, ["searchTerm"]);
 
   const result = await ClinicService.getClinics(filters, options);
 

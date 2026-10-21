@@ -1011,15 +1011,13 @@ const handleUnifiedStatusChange = async (
   let result: any;
 
   if (status === BookingStatus.CONFIRMED) {
-    result = await BookingService.confirmBooking(bookingId, userId);
+    result = await BookingService.confirmBooking(bookingId, userId, role);
   } else if (status === BookingStatus.CANCELLED) {
-    const caller = role === "DOCTOR" ? "DOCTOR" : role === "PATIENT" ? "PATIENT" : "CLINIC";
-    result = await BookingService.cancelBooking(bookingId, userId, caller, reason);
+    result = await BookingService.cancelBooking(bookingId, userId, role, reason);
   } else if (status === BookingStatus.REJECTED) {
-    const caller = role === "DOCTOR" ? "DOCTOR" : "CLINIC";
-    result = await BookingService.rejectBooking(bookingId, reason, caller);
+    result = await BookingService.rejectBooking(bookingId, reason, role, userId);
   } else if (status === BookingStatus.COMPLETE) {
-    result = await BookingService.completeBooking(bookingId);
+    result = await BookingService.completeBooking(bookingId, userId, role);
   } else if (status === BookingStatus.ARRIVED) {
     result = await prisma.bookingAppointment.update({
       where: { id: bookingId },
@@ -1853,9 +1851,13 @@ const getDoctorAppointments = async (
 const getClinics = async (filters: any, options: IPaginationOptions) => {
   const { page, limit, skip } = paginationHelpers.calculatePagination(options);
 
-  const { searchTerm, adminVerified } = filters;
+  const { searchTerm } = filters;
 
-  const andConditions: Prisma.ClinicWhereInput[] = [];
+  // This route is public and is used as a clinic directory. Keep unpublished
+  // and unapproved clinics out regardless of caller-supplied query params.
+  const andConditions: Prisma.ClinicWhereInput[] = [
+    { adminVerified: true, isVisible: true },
+  ];
 
   if (searchTerm) {
     andConditions.push({
@@ -1863,12 +1865,6 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
         contains: searchTerm,
         mode: "insensitive",
       },
-    });
-  }
-
-  if (adminVerified !== undefined) {
-    andConditions.push({
-      adminVerified: adminVerified === "true",
     });
   }
 
@@ -2287,7 +2283,7 @@ const executeDoctorAbsence = async (
   for (const booking of affectedBookings) {
     try {
       if (booking.status === BookingStatus.PENDING) {
-        await BookingService.rejectBooking(booking.id, absenceReason, "CLINIC");
+        await BookingService.rejectBooking(booking.id, absenceReason, "CLINIC", clinicUserId);
         pendingRejected++;
         processedBookings.push({
           appointmentId: booking.id,

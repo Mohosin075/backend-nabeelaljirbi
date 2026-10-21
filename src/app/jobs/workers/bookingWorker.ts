@@ -420,7 +420,7 @@ export const appointmentLifecycleWorker = new Worker<
         appointment.status === BookingStatus.INPROGRESS
       ) {
         console.log(`✅ [CONFIRMED_TIMEOUT] Appointment ${appointmentId} was ${appointment.status} → Auto-Completing.`);
-        await BookingService.completeBooking(appointmentId);
+        await BookingService.completeBooking(appointmentId, undefined, "SYSTEM");
         return { status: 'success', outcome: 'AUTO_COMPLETED', appointmentId };
       }
 

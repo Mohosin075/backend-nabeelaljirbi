@@ -22,7 +22,7 @@ router.get(
 
 router.patch(
   "/:appointmentId/confirm",
-  auth(UserRole.DOCTOR, UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   validateRequest(bookingValidation.approveBookingValidationSchema),
   BookingController.confirmBooking
 );
@@ -42,7 +42,7 @@ router.patch(
 
 router.patch(
   "/:appointmentId/complete",
-  auth(UserRole.DOCTOR, UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   BookingController.completeBooking
 );
 

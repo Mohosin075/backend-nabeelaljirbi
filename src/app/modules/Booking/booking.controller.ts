@@ -39,7 +39,7 @@ const getBookings = catchAsync(async (req: Request, res: Response) => {
 const confirmBooking = catchAsync(async (req: Request, res: Response) => {
   const { appointmentId } = req.params;
 
-  const result = await BookingService.confirmBooking(appointmentId);
+  const result = await BookingService.confirmBooking(appointmentId, req.user?.id, req.user?.role);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -68,7 +68,7 @@ const cancelBooking = catchAsync(async (req: Request, res: Response) => {
 const completeBooking = catchAsync(async (req: Request, res: Response) => {
   const { appointmentId } = req.params;
 
-  const result = await BookingService.completeBooking(appointmentId);
+  const result = await BookingService.completeBooking(appointmentId, req.user?.id, req.user?.role);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -85,7 +85,8 @@ const rejectBooking = catchAsync(async (req: Request, res: Response) => {
   const result = await BookingService.rejectBooking(
     appointmentId,
     reason,
-    req.user?.role || "CLINIC"
+    req.user?.role || "CLINIC",
+    req.user?.id,
   );
 
   sendResponse(res, {

@@ -92,38 +92,7 @@ const sendOTP = async (phoneNumber: string, OTPSender?: string) => {
     );
   }
 
-  // For testing purposes, skip OTP for a specific number
-  if (user?.phoneNumber === "+8801763170733") {
-    console.log("Test number detected, skipping OTP send");
-
-    const { accessToken, refreshToken } = generateTokens(user);
-
-    // Update user tokens and optional FCM token
-    await prisma.user.update({
-      where: { phoneNumber },
-      data: { accessToken, refreshToken },
-    });
-
-    return {
-      message: "Login successfully",
-      accessToken,
-      refreshToken,
-      profileCompleted: user.profileCompleted,
-      role: user.role,
-    };
-  }
-
   const { primary, fallback } = await resolvePrimaryOTPChannel(OTPSender);
-
-  const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
-  const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
-
-  console.log(`========================================`);
-  console.log(`[OTP GENERATED & SENT]`);
-  console.log(`📱 Phone Number : ${phoneNumber}`);
-  console.log(`📡 Target Channel: ${primary} (Fallback: ${fallback || "none"})`);
-  console.log(`🔑 DEV OTP CODE : ${generatedOtp} (or master: 123456)`);
-  console.log(`========================================`);
 
   let channelUsed: OTPChannel = primary;
   let verificationStatus = "pending";
@@ -139,9 +108,7 @@ const sendOTP = async (phoneNumber: string, OTPSender?: string) => {
     verificationStatus = verification.status;
     sendSuccess = true;
   } catch (primaryErr: any) {
-    console.warn(
-      `Primary OTP channel (${primary}) failed: ${primaryErr.message || primaryErr.code}`
-    );
+    console.warn(`Primary OTP channel (${primary}) failed: ${primaryErr.code || "unknown error"}`);
 
     // 2. If primary (WhatsApp) failed and fallback (SMS) is available, try fallback
     if (fallback) {
@@ -158,35 +125,32 @@ const sendOTP = async (phoneNumber: string, OTPSender?: string) => {
         verificationStatus = fallbackVerification.status;
         sendSuccess = true;
       } catch (fallbackErr: any) {
-        console.error(
-          `Fallback OTP channel (${fallback}) also failed: ${fallbackErr.message || fallbackErr.code}`
-        );
+        console.error(`Fallback OTP channel (${fallback}) failed: ${fallbackErr.code || "unknown error"}`);
       }
     }
   }
 
-  // Track user, save OTP to database
+  if (!sendSuccess) {
+    throw new ApiError(
+      httpStatus.BAD_GATEWAY,
+      "Unable to send OTP. Please try again later."
+    );
+  }
+
+  // Create the account before verification, but never store or return an OTP.
   await prisma.user.upsert({
     where: { phoneNumber },
-    update: {
-      otp: generatedOtp,
-      otpExpiresAt: otpExpiresAt,
-    },
+    update: { otp: null, otpExpiresAt: null },
     create: {
       phoneNumber,
-      otp: generatedOtp,
-      otpExpiresAt: otpExpiresAt,
       referralCode: generateReferralCode(),
     },
   });
 
   return {
-    message: sendSuccess
-      ? `OTP sent successfully via ${channelUsed}`
-      : "OTP sent (Development mode)",
+    message: `OTP sent successfully via ${channelUsed}`,
     channel: channelUsed,
     status: verificationStatus,
-    otp: generatedOtp, // returned for development UI / debugging if needed
   };
 };
 
@@ -198,44 +162,6 @@ const verifyUserByOTP = async (
 ) => {
   const user = await prisma.user.findUnique({ where: { phoneNumber } });
   if (!user) throw new ApiError(httpStatus.NOT_FOUND, "User not found");
-
-  console.log(`========================================`);
-  console.log(`[OTP VERIFICATION REQUEST]`);
-  console.log(`📱 Phone Number: ${phoneNumber}`);
-  console.log(`🔑 Submitted OTP: ${otp}`);
-  console.log(`========================================`);
-
-  // Allow master test OTP (123456) or locally generated database OTP
-  const isMasterOtp = otp === "123456";
-  const isLocalOtpValid =
-    user.otp &&
-    user.otp === otp &&
-    user.otpExpiresAt &&
-    user.otpExpiresAt > new Date();
-
-  if (isMasterOtp || isLocalOtpValid) {
-    console.log(`[OTP VERIFIED SUCCESSFULLY via Local/Dev OTP]`);
-    const { accessToken, refreshToken } = generateTokens(user);
-
-    await prisma.user.update({
-      where: { phoneNumber },
-      data: {
-        accessToken,
-        refreshToken,
-        fcmToken,
-        otp: null,
-        otpExpiresAt: null,
-      },
-    });
-
-    return {
-      message: "OTP verified successfully",
-      accessToken,
-      refreshToken,
-      profileCompleted: user.profileCompleted,
-      role: user.role,
-    };
-  }
 
   try {
     const verificationCheck = await client.verify.v2

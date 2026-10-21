@@ -10,6 +10,41 @@ import { Notification } from "../Notification/notification.service";
 import { NotificationTemplateService } from "../NotificationTemplate/notificationTemplate.service";
 import { checkCancellationAllowed } from "../../../utils/timezoneHelper";
 
+type BookingActorRole = "PATIENT" | "DOCTOR" | "CLINIC" | "MANAGER" | "ADMIN" | "SYSTEM";
+
+const assertBookingActor = async (
+  booking: {
+    patient?: { userId: string } | null;
+    doctor?: { userId: string } | null;
+    clinicId: string;
+    clinic?: { userId: string } | null;
+  },
+  userId: string | undefined,
+  role: string | undefined,
+  allowedRoles: BookingActorRole[],
+) => {
+  if (role === "SYSTEM" || role === "ADMIN") return;
+  if (!userId || !role || !allowedRoles.includes(role as BookingActorRole)) {
+    throw new ApiError(httpStatus.FORBIDDEN, "You are not authorized to perform this booking action");
+  }
+
+  const ownsBooking =
+    (role === "PATIENT" && booking.patient?.userId === userId) ||
+    (role === "DOCTOR" && booking.doctor?.userId === userId) ||
+    (role === "CLINIC" && booking.clinic?.userId === userId);
+  if (ownsBooking) return;
+
+  if (role === "MANAGER") {
+    const manager = await prisma.manager.findFirst({
+      where: { userId, clinicId: booking.clinicId },
+      select: { id: true },
+    });
+    if (manager) return;
+  }
+
+  throw new ApiError(httpStatus.FORBIDDEN, "You are not authorized to perform this booking action");
+};
+
 /**
  * 4 — Booking Flow
  * Flow: Doctor -> Clinic -> Date -> Working Period -> Request -> Clinic Approval -> Confirmed.
@@ -458,7 +493,8 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
  */
 const confirmBooking = async (
   appointmentId: string,
-  callerUserId?: string
+  callerUserId?: string,
+  callerRole?: string,
 ) => {
   const appointment = await prisma.bookingAppointment.findUnique({
     where: { id: appointmentId },
@@ -472,6 +508,8 @@ const confirmBooking = async (
   if (!appointment) {
     throw new ApiError(httpStatus.NOT_FOUND, "Appointment not found");
   }
+
+  await assertBookingActor(appointment, callerUserId, callerRole, ["CLINIC", "MANAGER", "ADMIN"]);
 
   if (appointment.status !== BookingStatus.PENDING) {
     throw new ApiError(
@@ -734,7 +772,8 @@ const confirmBooking = async (
 const rejectBooking = async (
   appointmentId: string,
   reason?: string,
-  cancelledBy: string = "CLINIC"
+  cancelledBy: string = "CLINIC",
+  callerUserId?: string,
 ) => {
   const appointment = await prisma.bookingAppointment.findUnique({
     where: { id: appointmentId },
@@ -748,6 +787,13 @@ const rejectBooking = async (
   if (!appointment) {
     throw new ApiError(httpStatus.NOT_FOUND, "Appointment not found");
   }
+
+  await assertBookingActor(
+    appointment,
+    callerUserId,
+    cancelledBy,
+    ["PATIENT", "CLINIC", "MANAGER", "ADMIN", "SYSTEM"],
+  );
 
   if (appointment.status !== BookingStatus.PENDING) {
     throw new ApiError(
@@ -1024,6 +1070,8 @@ const cancelBooking = async (
     throw new ApiError(httpStatus.NOT_FOUND, "Appointment not found");
   }
 
+  await assertBookingActor(booking, callerUserId, callerRole, ["PATIENT", "DOCTOR", "CLINIC", "MANAGER", "ADMIN"]);
+
   if (
     booking.status === BookingStatus.CANCELLED ||
     booking.status === BookingStatus.REJECTED ||
@@ -1044,7 +1092,7 @@ const cancelBooking = async (
     ? "PATIENT"
     : callerRole === "DOCTOR"
     ? "DOCTOR"
-    : callerRole === "CLINIC"
+    : callerRole === "CLINIC" || callerRole === "MANAGER"
     ? "CLINIC"
     : "ADMIN";
 
@@ -1357,14 +1405,25 @@ const cancelBooking = async (
   );
 };
 
-const completeBooking = async (appointmentId: string) => {
+const completeBooking = async (
+  appointmentId: string,
+  callerUserId?: string,
+  callerRole?: string,
+) => {
   const existing = await prisma.bookingAppointment.findUnique({
     where: { id: appointmentId },
+    include: {
+      patient: { select: { userId: true } },
+      doctor: { select: { userId: true } },
+      clinic: { select: { userId: true } },
+    },
   });
 
   if (!existing) {
     throw new ApiError(httpStatus.NOT_FOUND, "Appointment not found");
   }
+
+  await assertBookingActor(existing, callerUserId, callerRole, ["CLINIC", "MANAGER", "ADMIN", "SYSTEM"]);
 
   // Enforce valid state transitions: complete can only occur from CONFIRMED, INPROGRESS, or ARRIVED
   const validPriorStatuses: BookingStatus[] = [
