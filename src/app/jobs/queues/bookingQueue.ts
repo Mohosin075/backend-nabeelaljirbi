@@ -36,7 +36,7 @@ export const bookingNotificationQueue = new Queue<BookingNotificationJobData>(
 );
 
 // ─── Scenario 2: Pending booking timeout (clinic ignored PENDING) ─────────────
-// Fires 30 minutes after the appointment slot endTime. If still PENDING -> NOT_UPDATED.
+// Fires at the clinic-local working-period start. If still PENDING -> auto-reject/refund.
 export interface PendingBookingTimeoutJobData {
   appointmentId: string;
   patientId: string;        // Patient.id (NOT User.id)
@@ -45,7 +45,7 @@ export interface PendingBookingTimeoutJobData {
   adminUserId: string;      // User.id of admin
   patientServiceFee: number;
   consultDate: Date;
-  endTime: string;
+  deadlineTime: string;
   pendingTimeoutAt: Date;
 }
 

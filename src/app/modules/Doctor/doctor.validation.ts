@@ -49,13 +49,55 @@ const updateDoctorProfileValidationSchema = z
   })
   .passthrough();
 
+const timeToMinutes = (value: string) => {
+  const [hours, minutes] = value.split(":");
+  return Number.parseInt(hours, 10) * 60 + Number.parseInt(minutes, 10);
+};
+
+const workingSlotSchema = z.object({
+  startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?(?:\.\d+Z?)?$/),
+  endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?(?:\.\d+Z?)?$/),
+  capacity: z.number().int().min(1),
+  isActive: z.boolean().optional().default(true),
+}).refine((slot) => {
+  return timeToMinutes(slot.startTime) < timeToMinutes(slot.endTime);
+}, { message: "Working period end must be after its start" });
+
 const addWorkingHoursValidationSchema = z.object({
-  day: z.string(),
-  slots: z.array(z.string()),
-  capacity: z.number(),
+  body: z.object({
+    clinicId: z.string().optional(),
+    day: z.enum(["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"]),
+    slots: z.array(workingSlotSchema).max(30),
+  }).superRefine(({ slots }, ctx) => {
+    const sorted = slots
+      .map((slot) => ({
+        start: timeToMinutes(slot.startTime),
+        end: timeToMinutes(slot.endTime),
+      }))
+      .sort((a, b) => a.start - b.start);
+
+    for (let index = 1; index < sorted.length; index += 1) {
+      if (sorted[index].start < sorted[index - 1].end) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["slots"],
+          message: "Working periods cannot overlap",
+        });
+        break;
+      }
+    }
+  }),
+});
+
+const requestJoinClinicValidationSchema = z.object({
+  body: z.object({
+    clinicId: z.string().min(1),
+    note: z.string().max(1000).optional(),
+  }),
 });
 
 export const doctorValidation = {
   updateDoctorProfileValidationSchema,
   addWorkingHoursValidationSchema,
+  requestJoinClinicValidationSchema,
 };

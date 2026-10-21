@@ -19,7 +19,6 @@ import { getAppointmentStartUTC, DEFAULT_CLINIC_TIMEZONE } from '../../../utils/
 const REDIS_BOOKING_PREFIX = 'booking:scheduled:';
 const REDIS_PENDING_TIMEOUT_PREFIX = 'booking:pending-timeout:';
 const REDIS_CONFIRMED_TIMEOUT_PREFIX = 'booking:confirmed-timeout:';
-const PENDING_TIMEOUT_GRACE_MINUTES = 30;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INTERFACES
@@ -43,7 +42,7 @@ interface SchedulePendingTimeoutParams {
   clinicUserId: string;     // User.id of clinic
   adminUserId: string;      // User.id of admin
   patientServiceFee: number;
-  endTime: string;
+  deadlineTime: string;
   consultDate: Date;        // Appointment date/time — job fires at this moment
 }
 
@@ -111,12 +110,11 @@ function parseTimeParts(time: string): { hours: number; minutes: number; seconds
 
 function calculatePendingTimeoutAt(
   consultDate: Date,
-  endTime: string,
+  deadlineTime: string,
   timeZone: string = DEFAULT_CLINIC_TIMEZONE
 ): Date {
-  // Compute slot end authoritative UTC moment from clinic local time
-  const slotEndAt = getAppointmentStartUTC(consultDate, endTime, timeZone);
-  return new Date(slotEndAt.getTime() + PENDING_TIMEOUT_GRACE_MINUTES * 60 * 1000);
+  // Clinic response closes at the start of the working period.
+  return getAppointmentStartUTC(consultDate, deadlineTime, timeZone);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -224,13 +222,13 @@ export async function cancelBookingNotifications(appointmentId: string): Promise
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SCENARIO 2: Pending booking timeout
-// Fires 30 minutes after the working slot endTime. If still PENDING -> NOT_UPDATED + refund patient.
+// Fires at the working period start. If still PENDING -> auto-reject and release the full hold.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Schedule a delayed job that fires 30 minutes after the appointment slot endTime.
+ * Schedule a delayed job at the clinic-local start of the appointment period.
  * If the clinic has not accepted/rejected by then, the job marks the booking
- * as NOT_UPDATED and refunds the patient's service fee.
+ * as NOT_UPDATED and releases the patient's held amount before confirmation.
  */
 export async function schedulePendingBookingTimeout(
   params: SchedulePendingTimeoutParams
@@ -243,7 +241,7 @@ export async function schedulePendingBookingTimeout(
     adminUserId,
     patientServiceFee,
     consultDate,
-    endTime,
+    deadlineTime,
   } = params;
 
   try {
@@ -259,7 +257,7 @@ export async function schedulePendingBookingTimeout(
       }
     }
 
-    const pendingTimeoutAt = calculatePendingTimeoutAt(new Date(consultDate), endTime, timeZone);
+    const pendingTimeoutAt = calculatePendingTimeoutAt(new Date(consultDate), deadlineTime, timeZone);
     const delay = Math.max(0, pendingTimeoutAt.getTime() - now);
     const jobId = buildBullJobId(appointmentId, 'pending-timeout');
     const previousJobId = await redis.get(`${REDIS_PENDING_TIMEOUT_PREFIX}${appointmentId}`);
@@ -279,7 +277,7 @@ export async function schedulePendingBookingTimeout(
         adminUserId,
         patientServiceFee,
         consultDate: new Date(consultDate),
-        endTime,
+        deadlineTime,
         pendingTimeoutAt,
       },
       {
@@ -297,7 +295,7 @@ export async function schedulePendingBookingTimeout(
 
     console.log(
       `⏳ Scheduled PENDING_TIMEOUT for ${appointmentId} ` +
-      `(fires in ${Math.round(delay / 1000 / 60)} min, 30 min after slot endTime ${endTime})`
+      `(fires in ${Math.round(delay / 1000 / 60)} min at period start ${deadlineTime})`
     );
   } catch (error) {
     console.error(`Error scheduling pending timeout for ${appointmentId}:`, error);
@@ -532,7 +530,7 @@ export async function repairActiveLifecycleJobs(): Promise<void> {
             adminUserId: adminUser.id,
             patientServiceFee: booking.patientServiceFee,
             consultDate: booking.consultDate,
-            endTime: booking.endTime!,
+            deadlineTime: booking.startTime!,
           });
           repairedCount += 1;
           continue;

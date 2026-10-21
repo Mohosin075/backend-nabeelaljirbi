@@ -123,6 +123,9 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
     include: { doctor: true },
   });
   if (!user) throw new ApiError(httpStatus.NOT_FOUND, "User not found");
+  if (user.role !== UserRole.DOCTOR || !user.doctor) {
+    throw new ApiError(httpStatus.FORBIDDEN, "Only doctor accounts can update doctor profiles");
+  }
 
   const { accessToken } = generateTokens(user, UserRole.DOCTOR);
 
@@ -171,8 +174,6 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
           email: payload.email,
         }),
       }),
-
-      role: UserRole.DOCTOR,
 
       doctor: {
         upsert: {
@@ -244,32 +245,10 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
   });
 
   if (payload.clinicId) {
-    const doctorRecord = await prisma.doctor.findUnique({
-      where: { userId },
+    await requestJoinClinic(userId, {
+      clinicId: payload.clinicId,
+      note: "Sent during profile registration",
     });
-    if (doctorRecord) {
-      const alreadyLinked = await prisma.doctorClinic.findFirst({
-        where: { doctorId: doctorRecord.id, clinicId: payload.clinicId, isActive: true },
-      });
-      const pendingRequest = await prisma.doctorClinicRequest.findFirst({
-        where: { doctorId: doctorRecord.id, clinicId: payload.clinicId, status: "PENDING" },
-      });
-      if (!alreadyLinked && !pendingRequest) {
-        const clinicExists = await prisma.clinic.findUnique({
-          where: { id: payload.clinicId },
-        });
-        if (clinicExists) {
-          await prisma.doctorClinicRequest.create({
-            data: {
-              doctorId: doctorRecord.id,
-              clinicId: payload.clinicId,
-              status: "PENDING",
-              note: "Sent during profile registration",
-            },
-          });
-        }
-      }
-    }
   }
 
   return updatedUser;
@@ -298,43 +277,48 @@ const addWorkingHours = async (
 
   // 1️⃣ Find or create working day scoped by doctorId, clinicId, day
   const targetClinicId = payload.clinicId || null;
+  if (targetClinicId) {
+    const activeLink = await prisma.doctorClinic.findFirst({
+      where: { doctorId: doctor.id, clinicId: targetClinicId, isActive: true },
+      select: { id: true },
+    });
+    if (!activeLink) {
+      throw new ApiError(httpStatus.FORBIDDEN, "Clinic-specific schedules require an approved clinic link");
+    }
+  }
 
-  let workingDay = await prisma.workingDay.findFirst({
-    where: {
-      doctorId: doctor.id,
-      clinicId: targetClinicId,
-      day: payload.day as WeekDay,
-    },
-  });
+  const slotsData = payload.slots.map((slot) => ({
+    startTime: slot.startTime,
+    endTime: slot.endTime,
+    capacity: slot.capacity,
+    isActive: slot.isActive ?? true,
+  }));
 
-  if (!workingDay) {
-    workingDay = await prisma.workingDay.create({
-      data: {
+  await prisma.$transaction(async (tx) => {
+    let workingDay = await tx.workingDay.findFirst({
+      where: {
         doctorId: doctor.id,
         clinicId: targetClinicId,
         day: payload.day as WeekDay,
       },
     });
-  }
 
-  // 2️⃣ Remove existing slots (replace mode)
-  await prisma.workingSlot.deleteMany({
-    where: {
-      workingDayId: workingDay.id,
-    },
-  });
+    if (!workingDay) {
+      workingDay = await tx.workingDay.create({
+        data: {
+          doctorId: doctor.id,
+          clinicId: targetClinicId,
+          day: payload.day as WeekDay,
+        },
+      });
+    }
 
-  // 3️⃣ Create new slots
-  const slotsData = payload.slots.map((slot) => ({
-    workingDayId: workingDay.id,
-    startTime: slot.startTime,
-    endTime: slot.endTime,
-    capacity: slot.capacity,
-    isActive: slot.isActive,
-  }));
-
-  await prisma.workingSlot.createMany({
-    data: slotsData,
+    await tx.workingSlot.deleteMany({ where: { workingDayId: workingDay.id } });
+    if (slotsData.length > 0) {
+      await tx.workingSlot.createMany({
+        data: slotsData.map((slot) => ({ ...slot, workingDayId: workingDay.id })),
+      });
+    }
   });
 
   return {
@@ -591,92 +575,65 @@ const requestJoinClinic = async (
   userId: string,
   payload: { clinicId: string; note?: string }
 ) => {
-  const doctor = await prisma.doctor.findUnique({
-    where: { userId },
-  });
-
-  if (!doctor) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Doctor profile not found");
-  }
+  const doctor = await prisma.doctor.findUnique({ where: { userId } });
+  if (!doctor) throw new ApiError(httpStatus.NOT_FOUND, "Doctor profile not found");
 
   const clinic = await prisma.clinic.findUnique({
     where: { id: payload.clinicId },
+    include: { user: true },
   });
-
-  if (!clinic) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Target clinic not found");
+  if (!clinic) throw new ApiError(httpStatus.NOT_FOUND, "Target clinic not found");
+  if (
+    !clinic.adminVerified ||
+    !clinic.isVisible ||
+    clinic.user.status !== "ACTIVE" ||
+    clinic.user.banned
+  ) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "This clinic is not accepting join requests");
   }
 
-  // 1️⃣ Check active clinic count (Max 3 limit)
-  const activeCount = await prisma.doctorClinic.count({
-    where: {
-      doctorId: doctor.id,
-      isActive: true,
-    },
-  });
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const activeCount = await tx.doctorClinic.count({
+        where: { doctorId: doctor.id, isActive: true },
+      });
+      if (activeCount >= 3) {
+        throw new ApiError(httpStatus.BAD_REQUEST, "Doctor has already joined the maximum limit of 3 clinics");
+      }
 
-  if (activeCount >= 3) {
-    throw new ApiError(
-      httpStatus.BAD_REQUEST,
-      "Doctor has already joined the maximum limit of 3 clinics"
-    );
-  }
+      const existingLink = await tx.doctorClinic.findFirst({
+        where: { doctorId: doctor.id, clinicId: payload.clinicId, isActive: true },
+      });
+      if (existingLink) {
+        throw new ApiError(httpStatus.BAD_REQUEST, "Doctor is already linked to this clinic");
+      }
 
-  // 2️⃣ Check if doctor is already active in this clinic
-  const existingLink = await prisma.doctorClinic.findFirst({
-    where: {
-      doctorId: doctor.id,
-      clinicId: payload.clinicId,
-      isActive: true,
-    },
-  });
+      const existingPending = await tx.doctorClinicRequest.findFirst({
+        where: { doctorId: doctor.id, clinicId: payload.clinicId, status: "PENDING" },
+      });
+      if (existingPending) {
+        throw new ApiError(httpStatus.BAD_REQUEST, "A join request to this clinic is already pending approval");
+      }
 
-  if (existingLink) {
-    throw new ApiError(
-      httpStatus.BAD_REQUEST,
-      "Doctor is already linked to this clinic"
-    );
-  }
-
-  // 3️⃣ Check if pending request exists
-  const existingPending = await prisma.doctorClinicRequest.findFirst({
-    where: {
-      doctorId: doctor.id,
-      clinicId: payload.clinicId,
-      status: "PENDING",
-    },
-  });
-
-  if (existingPending) {
-    throw new ApiError(
-      httpStatus.BAD_REQUEST,
-      "A join request to this clinic is already pending approval"
-    );
-  }
-
-  // 4️⃣ Create new request
-  const request = await prisma.doctorClinicRequest.create({
-    data: {
-      doctorId: doctor.id,
-      clinicId: payload.clinicId,
-      note: payload.note,
-      status: "PENDING",
-    },
-    include: {
-      clinic: {
-        select: {
-          id: true,
-          clinicName: true,
-          logo: true,
-          location: true,
+      return tx.doctorClinicRequest.create({
+        data: {
+          doctorId: doctor.id,
+          clinicId: payload.clinicId,
+          note: payload.note,
+          status: "PENDING",
         },
-      },
-    },
-  });
-
-  return request;
+        include: {
+          clinic: { select: { id: true, clinicName: true, logo: true, location: true } },
+        },
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
+      throw new ApiError(httpStatus.CONFLICT, "Join request changed concurrently. Please refresh and try again.");
+    }
+    throw error;
+  }
 };
-
 const getDoctorJoinRequests = async (userId: string) => {
   const doctor = await prisma.doctor.findUnique({
     where: { userId },

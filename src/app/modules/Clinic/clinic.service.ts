@@ -1,4 +1,4 @@
-import { Prisma, UserRole, BookingStatus, TopUpType } from "@prisma/client";
+import { Prisma, UserRole, BookingStatus, TopUpType, UserStatus } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
 import { paginationHelpers } from "../../../utils/paginationHelper";
@@ -117,6 +117,9 @@ const updateClinicProfile = async (userId: string, payload: any) => {
   // 1️⃣ Check if user exists
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new ApiError(httpStatus.NOT_FOUND, "User not found");
+  if (user.role !== UserRole.CLINIC) {
+    throw new ApiError(httpStatus.FORBIDDEN, "Only the clinic administrator can update clinic settings");
+  }
 
   const { accessToken } = generateTokens(user, UserRole.CLINIC);
 
@@ -921,7 +924,7 @@ const handleUnifiedStatusChange = async (
   bookingId: string,
   status: BookingStatus,
   userId: string,
-  role: "CLINIC" | "MANAGER" | "DOCTOR" | "PATIENT" | "ADMIN",
+  role: "CLINIC" | "MANAGER" | "ADMIN",
   reason?: string,
 ) => {
   const appointment = await prisma.bookingAppointment.findUnique({
@@ -955,28 +958,6 @@ const handleUnifiedStatusChange = async (
         "Manager does not belong to this clinic"
       );
     }
-  } else if (role === "DOCTOR" && appointment.doctor?.userId !== userId) {
-    throw new ApiError(
-      httpStatus.FORBIDDEN,
-      "You are not authorized to update this appointment"
-    );
-  } else if (role === "PATIENT") {
-    if (appointment.patient?.userId !== userId) {
-      throw new ApiError(
-        httpStatus.FORBIDDEN,
-        "You are not authorized to update this appointment"
-      );
-    }
-    if (
-      status !== BookingStatus.ARRIVED &&
-      status !== BookingStatus.COMPLETE &&
-      status !== BookingStatus.CANCELLED
-    ) {
-      throw new ApiError(
-        httpStatus.FORBIDDEN,
-        "Patients can only update appointment status to ARRIVED, COMPLETE, or CANCELLED"
-      );
-    }
   }
 
   // Terminal state protection: terminal states cannot be transitioned further
@@ -994,17 +975,37 @@ const handleUnifiedStatusChange = async (
     );
   }
 
-  // Core lifecycle transitions: PENDING can only become CONFIRMED, REJECTED, or CANCELLED
-  if (
-    appointment.status === BookingStatus.PENDING &&
-    (status === BookingStatus.ARRIVED ||
-      status === BookingStatus.INPROGRESS ||
-      status === BookingStatus.COMPLETE ||
-      status === BookingStatus.NOT_SHOW)
-  ) {
+  const allowedTransitions: Record<BookingStatus, BookingStatus[]> = {
+    [BookingStatus.PENDING]: [BookingStatus.CONFIRMED, BookingStatus.REJECTED, BookingStatus.CANCELLED],
+    [BookingStatus.CONFIRMED]: [
+      BookingStatus.ARRIVED,
+      BookingStatus.INPROGRESS,
+      BookingStatus.COMPLETE,
+      BookingStatus.NOT_SHOW,
+      BookingStatus.CANCELLED,
+    ],
+    [BookingStatus.ARRIVED]: [
+      BookingStatus.INPROGRESS,
+      BookingStatus.COMPLETE,
+      BookingStatus.NOT_SHOW,
+      BookingStatus.CANCELLED,
+    ],
+    [BookingStatus.INPROGRESS]: [
+      BookingStatus.COMPLETE,
+      BookingStatus.NOT_SHOW,
+      BookingStatus.CANCELLED,
+    ],
+    [BookingStatus.COMPLETE]: [],
+    [BookingStatus.CANCELLED]: [],
+    [BookingStatus.NOT_SHOW]: [],
+    [BookingStatus.NOT_UPDATED]: [],
+    [BookingStatus.REJECTED]: [],
+  };
+
+  if (!allowedTransitions[appointment.status]?.includes(status)) {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
-      `Appointment is PENDING. It must be CONFIRMED before transitioning to ${status}`
+      `Cannot transition appointment from ${appointment.status} to ${status}`
     );
   }
 
@@ -1019,10 +1020,12 @@ const handleUnifiedStatusChange = async (
   } else if (status === BookingStatus.COMPLETE) {
     result = await BookingService.completeBooking(bookingId, userId, role);
   } else if (status === BookingStatus.ARRIVED) {
-    result = await prisma.bookingAppointment.update({
-      where: { id: bookingId },
+    const claimed = await prisma.bookingAppointment.updateMany({
+      where: { id: bookingId, status: appointment.status },
       data: { status: BookingStatus.ARRIVED },
     });
+    if (claimed.count !== 1) throw new ApiError(httpStatus.CONFLICT, "This booking has already been handled");
+    result = await prisma.bookingAppointment.findUniqueOrThrow({ where: { id: bookingId } });
 
     if (appointment.patient?.user?.fcmToken) {
       await Notification.PatientNotification(
@@ -1037,10 +1040,12 @@ const handleUnifiedStatusChange = async (
       );
     }
   } else if (status === BookingStatus.INPROGRESS) {
-    result = await prisma.bookingAppointment.update({
-      where: { id: bookingId },
+    const claimed = await prisma.bookingAppointment.updateMany({
+      where: { id: bookingId, status: appointment.status },
       data: { status: BookingStatus.INPROGRESS },
     });
+    if (claimed.count !== 1) throw new ApiError(httpStatus.CONFLICT, "This booking has already been handled");
+    result = await prisma.bookingAppointment.findUniqueOrThrow({ where: { id: bookingId } });
 
     if (appointment.patient?.user?.fcmToken) {
       await Notification.PatientNotification(
@@ -1062,14 +1067,16 @@ const handleUnifiedStatusChange = async (
         "A reason is required when marking an appointment as No Show"
       );
     }
-    result = await prisma.bookingAppointment.update({
-      where: { id: bookingId },
+    const claimed = await prisma.bookingAppointment.updateMany({
+      where: { id: bookingId, status: appointment.status },
       data: {
         status: BookingStatus.NOT_SHOW,
         cancellationReason: noShowReasonText,
         ...({ noShowReason: noShowReasonText } as any),
       },
     });
+    if (claimed.count !== 1) throw new ApiError(httpStatus.CONFLICT, "This booking has already been handled");
+    result = await prisma.bookingAppointment.findUniqueOrThrow({ where: { id: bookingId } });
 
     try {
       await BookingSchedulerService.cancelBookingNotifications(bookingId);
@@ -1089,29 +1096,33 @@ const handleUnifiedStatusChange = async (
       );
     }
   } else {
-    result = await prisma.bookingAppointment.update({
-      where: { id: bookingId },
-      data: { status },
-    });
+    throw new ApiError(httpStatus.BAD_REQUEST, `Unsupported booking status transition to ${status}`);
   }
 
-  // Real-time synchronization across all three interfaces
-  try {
-    broadcastBookingUpdate({
-      bookingId: result.id,
-      status: result.status,
-      clinicId: appointment.clinicId,
-      doctorId: appointment.doctorId,
-      patientId: appointment.patientId,
-      patientUserId: appointment.patient?.userId,
-      clinicUserId: appointment.clinic?.userId,
-      doctorUserId: appointment.doctor?.userId,
-      reason: reason || result.cancellationReason || result.rejectionReason,
-      serialNumber: appointment.serialNumber,
-      consultDate: appointment.consultDate,
-    });
-  } catch (err) {
-    console.error("WS broadcast error:", err);
+  // Shared booking lifecycle methods broadcast their own status changes.
+  // Only the simple tracking/no-show transitions need broadcasting here.
+  if (
+    status === BookingStatus.ARRIVED ||
+    status === BookingStatus.INPROGRESS ||
+    status === BookingStatus.NOT_SHOW
+  ) {
+    try {
+      broadcastBookingUpdate({
+        bookingId: result.id,
+        status: result.status,
+        clinicId: appointment.clinicId,
+        doctorId: appointment.doctorId,
+        patientId: appointment.patientId,
+        patientUserId: appointment.patient?.userId,
+        clinicUserId: appointment.clinic?.userId,
+        doctorUserId: appointment.doctor?.userId,
+        reason: reason || result.cancellationReason || result.rejectionReason,
+        serialNumber: appointment.serialNumber,
+        consultDate: appointment.consultDate,
+      });
+    } catch (err) {
+      console.error("WS broadcast error:", err);
+    }
   }
 
   return result;
@@ -1125,8 +1136,8 @@ const updateAppointmentStatus = async (
   userRole?: string,
 ) => {
   const mappedRole =
-    userRole === "DOCTOR" || userRole === "PATIENT" || userRole === "MANAGER" || userRole === "ADMIN"
-      ? (userRole as "DOCTOR" | "PATIENT" | "MANAGER" | "ADMIN")
+    userRole === "MANAGER" || userRole === "ADMIN"
+      ? (userRole as "MANAGER" | "ADMIN")
       : "CLINIC";
   return handleUnifiedStatusChange(bookingId, status, userId, mappedRole, reason);
 };
@@ -1270,7 +1281,6 @@ const getClinicDoctor = async (
     { role: UserRole.DOCTOR },
     {
       OR: [
-        { doctor: { clinicId: clinic.id } },
         { doctor: { doctorClinics: { some: { clinicId: clinic.id, isActive: true } } } },
       ],
     },
@@ -1857,6 +1867,7 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
   // and unapproved clinics out regardless of caller-supplied query params.
   const andConditions: Prisma.ClinicWhereInput[] = [
     { adminVerified: true, isVisible: true },
+    { user: { is: { status: UserStatus.ACTIVE, banned: false } } },
   ];
 
   if (searchTerm) {
@@ -1980,16 +1991,17 @@ async function getClinicByUserId(userId: string) {
     throw new ApiError(httpStatus.NOT_FOUND, "User not found");
   }
 
-  if (user.clinic) return user.clinic;
-  if (user.manager && user.manager.length > 0 && user.manager[0].clinic) {
+  if (user.role === UserRole.CLINIC && user.clinic) return user.clinic;
+  if (
+    user.role === UserRole.MANAGER &&
+    user.manager &&
+    user.manager.length > 0 &&
+    user.manager[0].clinic
+  ) {
     return user.manager[0].clinic;
   }
 
-  // Graceful fallback for Platform Admin or accounts without an attached clinic record
-  const defaultClinic = await prisma.clinic.findFirst();
-  if (defaultClinic) return defaultClinic;
-
-  throw new ApiError(httpStatus.NOT_FOUND, "Clinic profile not found for this user");
+  throw new ApiError(httpStatus.FORBIDDEN, "This account is not linked to a clinic");
 }
 
 const getClinicJoinRequests = async (userId: string) => {
@@ -2030,74 +2042,65 @@ const respondJoinRequest = async (
   payload: { status: "ACCEPTED" | "REJECTED"; note?: string }
 ) => {
   const clinic = await getClinicByUserId(userId);
-
-  const request = await prisma.doctorClinicRequest.findFirst({
-    where: { id: requestId, clinicId: clinic.id },
+  const clinicStatus = await prisma.clinic.findUnique({
+    where: { id: clinic.id },
+    include: { user: true },
   });
-
-  if (!request) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Join request not found");
+  if (
+    !clinicStatus?.adminVerified ||
+    !clinicStatus.isVisible ||
+    clinicStatus.user.status !== UserStatus.ACTIVE ||
+    clinicStatus.user.banned
+  ) {
+    throw new ApiError(httpStatus.FORBIDDEN, "This clinic cannot approve join requests");
   }
 
-  if (payload.status === "ACCEPTED") {
-    // 1️⃣ Validate Max 3 Clinics limit for doctor
-    const activeCount = await prisma.doctorClinic.count({
-      where: {
-        doctorId: request.doctorId,
-        isActive: true,
-      },
-    });
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const request = await tx.doctorClinicRequest.findFirst({
+        where: { id: requestId, clinicId: clinic.id, status: "PENDING" },
+      });
+      if (!request) {
+        throw new ApiError(httpStatus.CONFLICT, "Join request is missing or has already been handled");
+      }
 
-    if (activeCount >= 3) {
-      throw new ApiError(
-        httpStatus.BAD_REQUEST,
-        "Doctor has reached the maximum limit of 3 linked clinics"
-      );
+      if (payload.status === "ACCEPTED") {
+        const activeCount = await tx.doctorClinic.count({
+          where: { doctorId: request.doctorId, isActive: true },
+        });
+        if (activeCount >= 3) {
+          throw new ApiError(httpStatus.BAD_REQUEST, "Doctor has reached the maximum limit of 3 linked clinics");
+        }
+
+        await tx.doctorClinic.upsert({
+          where: { doctorId_clinicId: { doctorId: request.doctorId, clinicId: clinic.id } },
+          create: { doctorId: request.doctorId, clinicId: clinic.id, isActive: true },
+          update: { isActive: true, joinedAt: new Date() },
+        });
+
+        await tx.doctor.updateMany({
+          where: { id: request.doctorId, clinicId: null },
+          data: { clinicId: clinic.id, joinClinicDate: new Date() },
+        });
+      }
+
+      const claimed = await tx.doctorClinicRequest.updateMany({
+        where: { id: requestId, clinicId: clinic.id, status: "PENDING" },
+        data: { status: payload.status, note: payload.note },
+      });
+      if (claimed.count !== 1) {
+        throw new ApiError(httpStatus.CONFLICT, "Join request has already been handled");
+      }
+
+      return tx.doctorClinicRequest.findUniqueOrThrow({ where: { id: requestId } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
+      throw new ApiError(httpStatus.CONFLICT, "Clinic affiliations changed concurrently. Refresh and retry.");
     }
-
-    // 2️⃣ Create active link in DoctorClinic
-    await prisma.doctorClinic.upsert({
-      where: {
-        doctorId_clinicId: {
-          doctorId: request.doctorId,
-          clinicId: clinic.id,
-        },
-      },
-      create: {
-        doctorId: request.doctorId,
-        clinicId: clinic.id,
-        isActive: true,
-      },
-      update: {
-        isActive: true,
-      },
-    });
-
-    // 3️⃣ Update primary clinicId on Doctor if null
-    await prisma.doctor.updateMany({
-      where: {
-        id: request.doctorId,
-        clinicId: null,
-      },
-      data: {
-        clinicId: clinic.id,
-        joinClinicDate: new Date(),
-      },
-    });
+    throw error;
   }
-
-  // Update request status
-  const updatedRequest = await prisma.doctorClinicRequest.update({
-    where: { id: requestId },
-    data: {
-      status: payload.status,
-      note: payload.note,
-    },
-  });
-
-  return updatedRequest;
 };
-
 // Section 5: Doctor Absence Caseload Preview
 const getDoctorAbsenceCaseload = async (
   userId: string,

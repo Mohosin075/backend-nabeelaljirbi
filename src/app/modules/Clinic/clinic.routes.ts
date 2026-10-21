@@ -1,13 +1,21 @@
 import express from "express";
 import auth from "../../middlewares/auth";
 import validateRequest from "../../middlewares/validateRequest";
-import { UserRole } from "@prisma/client";
+import { AdminTier, UserRole } from "@prisma/client";
+import adminTierAuth from "../../middlewares/adminTierAuth";
 import { ClinicController } from "./clinic.controller";
 import { AdminController } from "../Admin/admin.controller";
 import { clinicValidation } from "./clinic.validation";
 import { s3Uploader } from "../../../helpars/s3Bucket/fileUploadToS3";
 
 const router = express.Router();
+
+// Clinic staff use these operational endpoints directly; an Admin override is
+// reserved for Super Admin because the Phase 1 spec calls it an exception path.
+const requireSuperAdminForAdminOverride = (req: any, res: any, next: any) => {
+  if (req.user?.role !== UserRole.ADMIN) return next();
+  return adminTierAuth(AdminTier.SUPER_ADMIN)(req, res, next);
+};
 
 router.get("/", ClinicController.getClinics);
 
@@ -19,112 +27,112 @@ const galleryUpload = s3Uploader.fields([
 
 router.patch(
   "/update-info",
-  auth(),
+  auth(UserRole.CLINIC),
   fileUpload,
   ClinicController.updateClinicProfile
 );
 
 router.get(
   "/info",
-  auth(),
+  auth(UserRole.CLINIC),
   ClinicController.getClinicProfile
 );
 
 router.post(
   "/specialists",
-  auth(),
+  auth(UserRole.CLINIC),
   imageUpload,
   ClinicController.createClinicSpecialist
 );
 
 router.get(
   "/specialists",
-  auth(),
+  auth(UserRole.CLINIC),
   ClinicController.getClinicSpecialists
 );
 
 router.delete(
   "/specialists/:id",
-  auth(),
+  auth(UserRole.CLINIC),
   ClinicController.deleteClinicSpecialist
 );
 
 router.post(
   "/insurances",
-  auth(),
+  auth(UserRole.CLINIC),
   imageUpload,
   ClinicController.createClinicInsurance
 );
 
 router.get(
   "/insurances",
-  auth(),
+  auth(UserRole.CLINIC),
   ClinicController.getClinicInsurances
 );
 
 router.delete(
   "/insurances/:id",
-  auth(),
+  auth(UserRole.CLINIC),
   ClinicController.deleteClinicInsurance
 );
 router.post(
   "/galleries",
-  auth(),
+  auth(UserRole.CLINIC),
   galleryUpload,
   ClinicController.createPhotoGallery
 );
 
 router.get(
   "/galleries",
-  auth(),
+  auth(UserRole.CLINIC),
   ClinicController.getPhotoGalleries
 );
 
 router.delete(
   "/clear-galleries",
-  auth(),
+  auth(UserRole.CLINIC),
   ClinicController.clearPhotoGalleries
 );
 
 router.delete(
   "/galleries/:id",
-  auth(),
+  auth(UserRole.CLINIC),
   ClinicController.deletePhotoGallery
 );
 
 router.patch(
   "/bookings/status",
   auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  requireSuperAdminForAdminOverride,
+  validateRequest(clinicValidation.updateBookingStatusValidationSchema),
   ClinicController.updateBookingStatus
 );
 
 router.get(
   "/manager-stats",
-  auth(),
+  auth(UserRole.CLINIC, UserRole.MANAGER),
   ClinicController.getClinicManagerStats
 );
 
 router.get(
   "/stats",
-  auth(),
+  auth(UserRole.CLINIC, UserRole.MANAGER),
   ClinicController.getClinicStats
 );
 
 router.patch(
   "/update/appointment-status",
-  auth(
-    UserRole.CLINIC,
-    UserRole.MANAGER,
-    UserRole.ADMIN,
-    UserRole.DOCTOR,
-    UserRole.PATIENT,
-  ),
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  requireSuperAdminForAdminOverride,
+  validateRequest(clinicValidation.updateBookingStatusValidationSchema),
   ClinicController.updateAppointmentStatus
 );
 
 router.patch(
   "/manager-update/appointment-status",
   auth(UserRole.MANAGER, UserRole.CLINIC, UserRole.ADMIN),
+  requireSuperAdminForAdminOverride,
+  validateRequest(clinicValidation.updateBookingStatusValidationSchema),
   ClinicController.managerUpdateAppointmentStatus
 );
 
@@ -143,79 +151,80 @@ router.post(
 
 router.patch(
   "/remove-clinic-doctor/:doctorId",
-  auth(),
+  auth(UserRole.CLINIC),
   ClinicController.removeDoctorFromClinic
 );
 
 router.get(
   "/booking-history",
-  auth(),
+  auth(UserRole.CLINIC, UserRole.MANAGER),
   ClinicController.getBookingHistory
 );
 
 router.get(
   "/manager/booking-history",
-  auth(),
+  auth(UserRole.MANAGER),
   ClinicController.getManagerBookingHistory
 );
 
 router.get(
   "/doctors",
-  auth(),
+  auth(UserRole.CLINIC, UserRole.MANAGER),
   ClinicController.getClinicDoctor
 );
 
 router.get(
   "/manager/doctors",
-  auth(),
+  auth(UserRole.MANAGER),
   ClinicController.getClinicManagerDoctor
 );
 
 router.get(
   "/doctor-appointments",
-  auth(),
+  auth(UserRole.CLINIC, UserRole.MANAGER),
   ClinicController.getDoctorAppointments
 );
 
 router.get(
   "/doctor-appointments/:doctorId",
-  auth(),
+  auth(UserRole.CLINIC, UserRole.MANAGER),
   ClinicController.getDoctorAppointments
 );
 
 router.get(
   "/join-requests",
-  auth(),
+  auth(UserRole.CLINIC),
   ClinicController.getClinicJoinRequests
 );
 
 router.patch(
   "/join-request/:requestId/status",
-  auth(),
+  auth(UserRole.CLINIC),
+  validateRequest(clinicValidation.respondJoinRequestValidationSchema),
   ClinicController.respondJoinRequest
 );
 
 router.get(
   "/reconciliation-reports",
-  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  auth(UserRole.CLINIC),
   ClinicController.getClinicReconciliationReports
 );
 
 router.get(
   "/financial-summary",
-  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  auth(UserRole.CLINIC),
   ClinicController.getClinicFinancialSummary
 );
 
 router.get(
   "/settlements",
-  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  auth(UserRole.CLINIC),
   AdminController.getSettlements
 );
 
 router.post(
   "/settlements",
-  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  auth(UserRole.CLINIC),
   AdminController.createSettlement
 );
 

@@ -231,17 +231,11 @@ export const appointmentLifecycleWorker = new Worker<
         `🚨 [PENDING_TIMEOUT] Clinic ignored booking ${appointmentId} — marking NOT_UPDATED, refunding patient, and penalizing clinic`
       );
 
-      await prisma.$transaction(async (tx) => {
-        // 1. Fetch clinic user to get serviceFree amount for penalty
-        const clinicUser = await tx.user.findUnique({
-          where: { id: clinicUserId },
-          select: { serviceFree: true },
-        });
-        const clinicPenalty = clinicUser?.serviceFree || 0;
-
-        // 2. Update status to REJECTED (Section 4/5: silence by deadline triggers auto-reject)
-        await tx.bookingAppointment.update({
-          where: { id: appointmentId },
+      const didAutoReject = await prisma.$transaction(async (tx) => {
+        // Claim the pending state first. A clinic approval/rejection racing
+        // this deadline must win exactly once, including all wallet effects.
+        const claimed = await tx.bookingAppointment.updateMany({
+          where: { id: appointmentId, status: BookingStatus.PENDING },
           data: {
             status: BookingStatus.REJECTED,
             rejectionReason: 'Auto-rejected: Clinic silence by deadline',
@@ -249,8 +243,16 @@ export const appointmentLifecycleWorker = new Worker<
             cancelledBy: 'CLINIC',
           },
         });
+        if (claimed.count !== 1) return false;
 
-        // 3. Unfreeze patient hold or refund patientServiceFee back to the patient
+        // 1. Fetch clinic user to get serviceFree amount for penalty
+        const clinicUser = await tx.user.findUnique({
+          where: { id: clinicUserId },
+          select: { serviceFree: true },
+        });
+        const clinicPenalty = clinicUser?.serviceFree || 0;
+
+        // 2. Unfreeze the patient hold
         const holdAmount = (appointment as any).holdAmount || 0;
         if (holdAmount > 0) {
           await tx.user.update({
@@ -264,7 +266,7 @@ export const appointmentLifecycleWorker = new Worker<
           });
         }
 
-        // 3b. Unfreeze clinic hold in full (Section 6: "released in full on rejection or auto-reject")
+        // 3. Unfreeze clinic hold in full on auto-rejection
         const clinicHold = (appointment as any).clinicServiceFee || 0;
         if (clinicHold > 0 && clinicUserId) {
           await tx.user.update({
@@ -370,7 +372,30 @@ export const appointmentLifecycleWorker = new Worker<
             },
           });
         }
+
+        return true;
       });
+
+      if (!didAutoReject) {
+        return { status: 'skipped', reason: 'booking_handled_concurrently' };
+      }
+
+      try {
+        broadcastBookingUpdate({
+          bookingId: appointment.id,
+          status: BookingStatus.REJECTED,
+          clinicId: appointment.clinicId,
+          doctorId: appointment.doctorId,
+          patientId: appointment.patientId,
+          patientUserId,
+          clinicUserId,
+          reason: 'Auto-rejected: Clinic silence by deadline',
+          serialNumber: appointment.serialNumber,
+          consultDate: appointment.consultDate,
+        });
+      } catch (wsErr) {
+        console.error('WS broadcast error on pending timeout:', wsErr);
+      }
 
       console.log(`✅ [PENDING_TIMEOUT] Appointment ${appointmentId} → NOT_UPDATED, patient refunded`);
       return { status: 'success', outcome: 'NOT_UPDATED', appointmentId };
@@ -438,16 +463,17 @@ export const appointmentLifecycleWorker = new Worker<
       const consultFee = appointment.consultFee || 0;
       const isModeB = appointment.collectionMode === "MODE_B";
 
-      await prisma.$transaction(async (tx) => {
-        // 1. Close appointment as NOT_SHOW with clear neglected reason
-        await tx.bookingAppointment.update({
-          where: { id: appointmentId },
+      const didAutoSettle = await prisma.$transaction(async (tx) => {
+        // A manual completion/cancellation must not race and receive a second settlement.
+        const claimed = await tx.bookingAppointment.updateMany({
+          where: { id: appointmentId, status: BookingStatus.CONFIRMED },
           data: {
             status: BookingStatus.NOT_SHOW,
             cancellationReason: "Auto-settled: Neglected (no arrival recorded)",
             ...({ noShowReason: "Auto-settled: Neglected (no arrival recorded)" } as any),
           },
         });
+        if (claimed.count !== 1) return false;
 
         // 2. Refund consultation fee if Mode B
         if (isModeB && consultFee > 0 && patient?.userId) {
@@ -475,8 +501,8 @@ export const appointmentLifecycleWorker = new Worker<
             title: 'Appointment Auto-Settled',
             description:
               isModeB && consultFee > 0
-                ? `Your appointment was unresolved after the period end. The consultation amount of ${consultFee} LYD has been refunded to your wallet.`
-                : 'Your appointment was marked as unresolved after the scheduled period.',
+                ? `Your appointment was unresolved after the period end. The consultation amount of ${consultFee} LYD has been refunded to your wallet. The service fee captured at confirmation is non-refundable.`
+                : 'Your appointment was marked as unresolved after the scheduled period. The service fee captured at confirmation is non-refundable.',
           },
         });
 
@@ -491,7 +517,31 @@ export const appointmentLifecycleWorker = new Worker<
               `Appointment ${appointmentId} auto-settled after period end without recorded arrival. Service fee of ${clinicServiceFee} was retained by platform.`,
           },
         });
+
+        return true;
       });
+
+      if (!didAutoSettle) {
+        // The clinic may have recorded arrival while the neglected settlement
+        // was claiming CONFIRMED. Preserve the auto-completion rule in that race.
+        const latest = await prisma.bookingAppointment.findUnique({
+          where: { id: appointmentId },
+          select: { status: true },
+        });
+        if (
+          latest?.status === BookingStatus.ARRIVED ||
+          latest?.status === BookingStatus.INPROGRESS
+        ) {
+          await BookingService.completeBooking(appointmentId, undefined, "SYSTEM");
+          return { status: 'success', outcome: 'AUTO_COMPLETED', appointmentId };
+        }
+        if (latest?.status === BookingStatus.CONFIRMED) {
+          // A transient write/transaction conflict left the booking actionable;
+          // throw so the queue can retry instead of dropping its timeout job.
+          throw new Error(`Could not claim confirmed timeout for ${appointmentId}`);
+        }
+        return { status: 'skipped', reason: 'booking_handled_concurrently' };
+      }
 
       try {
         broadcastBookingUpdate({

@@ -607,6 +607,15 @@ const suspendUserWithRefund = async (targetId: string, suspended: boolean, reaso
           `Cancelled due to provider suspension (${providerName})`
         );
         cancelledCount++;
+        // Pending holds are released without having been charged. For a
+        // confirmed Mode B booking, only the consultation amount is refunded;
+        // captured patient/clinic service fees remain with the platform.
+        if (
+          apt.status !== BookingStatus.PENDING &&
+          apt.collectionMode === "MODE_B"
+        ) {
+          totalRefunded = Number((totalRefunded + (apt.consultFee || 0)).toFixed(2));
+        }
       } catch (err) {
         console.error(
           `Failed to cancel booking ${apt.id} during suspension:`,
@@ -636,7 +645,7 @@ const suspendUserWithRefund = async (targetId: string, suspended: boolean, reaso
     user: updatedUser,
     cancelledAppointmentsCount: cancelledCount,
     totalRefundedAmount: totalRefunded,
-    message: `${user.role || 'User'} suspended successfully. ${cancelledCount} future appointments were automatically cancelled with 100% refunds issued to patients.`,
+    message: `${user.role || 'User'} suspended successfully. ${cancelledCount} future appointments were cancelled. Pending holds were released; eligible Mode B consultation amounts totaling ${totalRefunded.toFixed(2)} LYD were refunded. Captured service fees remain non-refundable.`,
   };
 };
 

@@ -1,12 +1,10 @@
-import { Prisma, UserRole, BookingStatus, TopUpType, Country, UserStatus } from "@prisma/client";
+import { Prisma, UserRole, BookingStatus, UserStatus } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
 import { paginationHelpers } from "../../../utils/paginationHelper";
 import prisma from "../../../shared/prisma";
 import { IPaginationOptions } from "../../../interfaces/paginations";
-import { Notification } from "../Notification/notification.service";
 import { generateTokens } from "../Auth/auth.service";
-import { BookingSchedulerService } from "../../jobs/services/bookingScheduler.service";
 import { BookingService } from "../Booking/booking.service";
 
 const now = Date.now();
@@ -80,6 +78,9 @@ const getPatientProfile = async (userId: string) => {
 const updatePatientProfile = async (userId: string, payload: any) => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new ApiError(httpStatus.NOT_FOUND, "User not found");
+  if (user.role !== UserRole.PATIENT) {
+    throw new ApiError(httpStatus.FORBIDDEN, "Only patient accounts can update patient profiles");
+  }
 
   const { accessToken } = generateTokens(user, UserRole.PATIENT);
 
@@ -102,7 +103,6 @@ const updatePatientProfile = async (userId: string, payload: any) => {
           email: payload.email,
         }),
       }),
-      role: UserRole.PATIENT,
       patient: {
         upsert: {
           create: {
@@ -170,11 +170,23 @@ const getPopularDoctors = async (
   const andConditions: Prisma.UserWhereInput[] = [
     {
       role: UserRole.DOCTOR,
-      status: { not: UserStatus.DELETED },
+      status: UserStatus.ACTIVE,
       banned: false,
       doctor: {
         is: {
           adminVerified: true,
+          doctorClinics: {
+            some: {
+              isActive: true,
+              clinic: {
+                is: {
+                  adminVerified: true,
+                  isVisible: true,
+                  user: { is: { status: UserStatus.ACTIVE, banned: false } },
+                },
+              },
+            },
+          },
         },
       },
     },
@@ -238,7 +250,20 @@ const getPopularDoctors = async (
     include: {
       doctor: {
         include: {
-          clinic: true,
+          clinic: { include: { user: true } },
+          doctorClinics: {
+            where: {
+              isActive: true,
+              clinic: {
+                is: {
+                  adminVerified: true,
+                  isVisible: true,
+                  user: { is: { status: UserStatus.ACTIVE, banned: false } },
+                },
+              },
+            },
+            include: { clinic: true },
+          },
         },
       },
       ratingsReceived: {
@@ -265,7 +290,13 @@ const getPopularDoctors = async (
       experience: doc.doctor?.experience,
       fee: doc.doctor?.consultFee,
       profileImage: doc.profileImage,
-      clinic: doc.doctor?.clinic?.clinicName,
+      clinic:
+        doc.doctor?.clinic?.adminVerified &&
+        doc.doctor.clinic.isVisible &&
+        doc.doctor.clinic.user?.status === UserStatus.ACTIVE &&
+        !doc.doctor.clinic.user?.banned
+          ? doc.doctor.clinic.clinicName
+          : doc.doctor?.doctorClinics[0]?.clinic.clinicName,
       badgeActive: doc.doctor?.badgeActive || false,
       rating: Number(averageRating.toFixed(1)),
       reviewCount,
@@ -447,7 +478,7 @@ const getNearestClinics = async (
       },
     },
     { banned: false },
-    { status: { not: UserStatus.DELETED } },
+    { status: UserStatus.ACTIVE },
   ];
 
   if (city && city.trim().toLowerCase() !== "all") {
@@ -637,7 +668,11 @@ const getClinicDetailsById = async (clinicUserId: string) => {
         { id: clinicUserId },
         { clinic: { id: clinicUserId } },
       ],
-      clinic: { isNot: null },
+      status: UserStatus.ACTIVE,
+      banned: false,
+      clinic: {
+        is: { adminVerified: true, isVisible: true },
+      },
     },
     select: {
       id: true,
@@ -690,9 +725,14 @@ const getClinicDetailsById = async (clinicUserId: string) => {
     throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
   }
 
-  const doctorCount = await prisma.doctor.count({
+  const doctorCount = await prisma.doctorClinic.count({
     where: {
       clinicId: clinicUser.clinic.id,
+      isActive: true,
+      doctor: {
+        adminVerified: true,
+        user: { is: { status: UserStatus.ACTIVE, banned: false } },
+      },
     },
   });
 
@@ -890,7 +930,9 @@ const getClinicDoctors = async (
         { id: clinicUserId },
         { clinic: { id: clinicUserId } },
       ],
-      clinic: { isNot: null },
+      status: UserStatus.ACTIVE,
+      banned: false,
+      clinic: { is: { adminVerified: true, isVisible: true } },
     },
     include: { clinic: true },
   });
@@ -899,20 +941,18 @@ const getClinicDoctors = async (
     throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
   }
 
-  const clinicId = clinicUser.clinic.id;
+  const selectedClinic = clinicUser.clinic;
+  const clinicId = selectedClinic.id;
 
   // 2️⃣ Build Prisma WHERE conditions
   const andConditions: Prisma.UserWhereInput[] = [
     { role: UserRole.DOCTOR },
-    { status: { not: UserStatus.DELETED } },
+      { status: UserStatus.ACTIVE },
     { banned: false },
     { doctor: { is: { adminVerified: true } } },
-    {
-      OR: [
-        { doctor: { clinicId } },
-        { doctor: { doctorClinics: { some: { clinicId, isActive: true } } } },
-      ],
-    },
+    // A legacy primary-clinic pointer is not proof of clinic approval.
+    // Public affiliation must come from the approved active relationship.
+    { doctor: { doctorClinics: { some: { clinicId, isActive: true } } } },
   ];
 
   if (consultFee) {
@@ -977,14 +1017,16 @@ const getClinicDoctors = async (
       consultFee: doc.doctor?.consultFee,
       profileImage: doc.profileImage,
 
-      clinicName: doc.doctor?.clinic?.clinicName,
-      clinicLogo: doc.doctor?.clinic?.logo,
-      clinicLat: doc.doctor?.clinic?.latitude,
-      clinicLng: doc.doctor?.clinic?.longitude,
+      clinicName: selectedClinic.clinicName,
+      clinicLogo: selectedClinic.logo,
+      clinicLat: selectedClinic.latitude,
+      clinicLng: selectedClinic.longitude,
       rating: roundedRating,
       reviewCount,
       views: doc.doctor?.clinic?.views,
-      clinicId: doc.doctor?.clinic?.userId,
+      // Return the clinic currently being browsed, not the doctor's legacy
+      // primary-clinic pointer, so the next details/booking request stays scoped.
+      clinicId,
       doctorId: doc.doctor?.id,
       badgeActive: doc.doctor?.badgeActive || false,
     };
@@ -1017,12 +1059,12 @@ const getClinicDoctors = async (
   };
 };
 
-const getDoctor = async (doctorId: string) => {
+const getDoctor = async (doctorId: string, requestedClinicId?: string) => {
   // 1️⃣ Fetch doctor user
   const doctorUser = await prisma.user.findFirst({
     where: {
       role: UserRole.DOCTOR,
-      status: { not: UserStatus.DELETED },
+      status: UserStatus.ACTIVE,
       banned: false,
       doctor: {
         id: doctorId,
@@ -1041,7 +1083,16 @@ const getDoctor = async (doctorId: string) => {
             },
           },
           doctorClinics: {
-            where: { isActive: true },
+            where: {
+              isActive: true,
+              clinic: {
+                is: {
+                  adminVerified: true,
+                  isVisible: true,
+                  user: { is: { status: UserStatus.ACTIVE, banned: false } },
+                },
+              },
+            },
             include: {
               clinic: {
                 include: {
@@ -1088,7 +1139,38 @@ const getDoctor = async (doctorId: string) => {
     ? ratings.reduce((a, b) => a + b, 0) / reviewCount
     : 0;
 
-  // 3️⃣ Shape response
+  const primaryClinic = doctorUser.doctor.clinic;
+  const availableClinicLinks = doctorUser.doctor.doctorClinics;
+  if (availableClinicLinks.length === 0) {
+    throw new ApiError(
+      httpStatus.NOT_FOUND,
+      "Doctor has no active, public clinic affiliation for Phase 1 bookings",
+    );
+  }
+  const selectedClinicLink = requestedClinicId
+    ? availableClinicLinks.find(
+        (link) =>
+          link.clinicId === requestedClinicId ||
+          link.clinic.userId === requestedClinicId,
+      )
+    : availableClinicLinks.find((link) => link.clinicId === primaryClinic?.id) ??
+      availableClinicLinks[0];
+
+  if (requestedClinicId && !selectedClinicLink) {
+    throw new ApiError(
+      httpStatus.NOT_FOUND,
+      "Doctor is not actively affiliated with this clinic",
+    );
+  }
+
+  // A booking must use an explicitly approved active DoctorClinic link.
+  // The legacy Doctor.clinicId pointer is not a source of booking affiliation.
+  const publicClinic = selectedClinicLink?.clinic;
+  const publicClinicIds = new Set(
+    publicClinic ? [publicClinic.id] : [],
+  );
+
+  // 3️⃣ Shape response, excluding affiliations that are hidden or suspended.
   return {
     id: doctorUser.id,
     name: doctorUser.fullName,
@@ -1103,11 +1185,13 @@ const getDoctor = async (doctorId: string) => {
     qualifications: doctorUser.doctor.qualifications,
     profileImage: doctorUser.profileImage,
 
-    clinicName: doctorUser.doctor.clinic?.clinicName,
-    clinicLogo: doctorUser.doctor.clinic?.logo,
-    clinicCountry: doctorUser.doctor.clinic?.user.country,
-    clinicPhoto: doctorUser.doctor.clinic?.galleries ?? [],
-    views: doctorUser.doctor.clinic?.views,
+    clinicName: publicClinic?.clinicName,
+    clinicLogo: publicClinic?.logo,
+    clinicCountry: publicClinic?.user.country,
+    clinicServiceFeePercentage: publicClinic?.serviceFeePercentage ?? 0,
+    clinicCollectionMode: publicClinic?.collectionMode ?? "MODE_A",
+    clinicPhoto: publicClinic?.galleries ?? [],
+    views: publicClinic?.views,
 
     doctorClinics: doctorUser.doctor.doctorClinics.map((dc) => ({
       id: dc.clinic.id,
@@ -1122,15 +1206,13 @@ const getDoctor = async (doctorId: string) => {
     rating: Number(averageRating.toFixed(1)),
     reviewCount,
 
-    schedule: doctorUser.doctor.workingDays,
+    schedule: doctorUser.doctor.workingDays.filter(
+      (day) => !day.clinicId || publicClinicIds.has(day.clinicId),
+    ),
     about: doctorUser.doctor.about,
 
     clinicId:
-      doctorUser.doctor.clinic?.id ??
-      doctorUser.doctor.clinicId ??
-      (doctorUser.doctor.doctorClinics.length > 0
-        ? doctorUser.doctor.doctorClinics[0].clinic.id
-        : doctorUser.doctor.clinic?.userId),
+      publicClinic?.id,
     doctorId: doctorUser.doctor.id,
   };
 };
@@ -1142,341 +1224,31 @@ const bookingAppointment = async (
   workingSlotId: string,
   consultDate: string,
 ) => {
-  const adminUser = await prisma.user.findUnique({
-    where: { phoneNumber: `${process.env.ADMIN_PHONE_NUMBER}` },
+  return BookingService.createBooking(userId, {
+    clinicId,
+    doctorId,
+    workingSlotId,
+    consultDate,
+    bookedFor: "SELF",
   });
+};
 
-  if (!adminUser) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Admin not found");
-  }
-
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    include: {
-      patient: true,
+const getPatientBookingSettings = async () => {
+  const settings = await prisma.platformBookingSetting.findFirst({
+    select: {
+      advanceBookingDays: true,
+      cancellationCutoffHours: true,
     },
   });
 
-  if (!user || !user.patient) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Patient not found");
-  }
-
-
-
-  const patientId = user.patient.id;
-
-  const doctor = await prisma.doctor.findUnique({
-    where: {
-      id: doctorId,
-    },
-    include: {
-      user: true,
-    },
-  });
-
-  if (!doctor) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
-  }
-
-  if (!doctor.adminVerified) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Doctor is not approved by admin and cannot accept appointments");
-  }
-
-  if (doctor.user?.banned || doctor.user?.status === UserStatus.SUSPENDED) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Doctor is currently suspended and cannot accept appointments");
-  }
-
-  if (!doctor.consultFee) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Doctor consult fee not found");
-  }
-
-  // if (!user.platformSubscriptionActive) {
-  //   // throw new ApiError(httpStatus.BAD_REQUEST, "Insufficient balance");
-  //   return "Platform subscription is not active";
-  // }
-
-
-  const clinic = await prisma.user.findUnique({
-    where: {
-      id: clinicId,
-    },
-    include: {
-      clinic: true,
-    },
-  });
-
-  if (!clinic || !clinic.clinic) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
-  }
-
-  if (!clinic.clinic.adminVerified) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Clinic is not approved by admin and cannot accept appointments");
-  }
-
-  if (clinic.banned || clinic.status === UserStatus.SUSPENDED) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Clinic is currently suspended and cannot accept appointments");
-  }
-
-  if (!clinic.country) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Clinic country is not set yet");
-  }
-
-  const patientServiceFee = await prisma.patientServiceFee.findUnique({
-    where: {
-      country: clinic.country.toUpperCase() as Country,
-    },
-  });
-
-  if (!patientServiceFee) {
-    throw new ApiError(
-      httpStatus.NOT_FOUND,
-      `Patient service fee not set for country: ${user.country}`
-    );
-  }
-
-  if (user.wallet < patientServiceFee.amount) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Insufficient balance");
-  }
-
-  // clinic insufficient balance check
-  // if (clinic.wallet < clinic.serviceFree) {
-  //   throw new ApiError(httpStatus.BAD_REQUEST, "Insufficient clinic balance");
-  // }
-
-  const clinicEntity = clinic.clinic;
-
-  console.log("--->", doctor.clinicId, clinicEntity.id);
-  // console.log("--->",clinic);
-
-  // 1️⃣ Validate Working Slot & Get details
-  const workingSlot = await prisma.workingSlot.findUnique({
-    where: { id: workingSlotId },
-    include: {
-      workingDay: {
-        include: {
-          doctor: {
-            include: {
-              clinic: true,
-            },
-          },
-        },
-      },
-    },
-  });
-
-  if (!workingSlot) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Working slot not found");
-  }
-
-  if (!workingSlot.isActive) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Working slot is not enabled");
-  }
-
-  // 2️⃣ Validate Date Matches Day
-  const inputDate = new Date(consultDate);
-  // const days = [
-  //   "SUNDAY",
-  //   "MONDAY",
-  //   "TUESDAY",
-  //   "WEDNESDAY",
-  //   "THURSDAY",
-  //   "FRIDAY",
-  //   "SATURDAY",
-  // ];
-  // const dayName = days[inputDate.getUTCDay()];
-
-  // if (dayName !== workingSlot.workingDay.day) {
-  //   throw new ApiError(
-  //     httpStatus.BAD_REQUEST,
-  //     `Consult date ${consultDate} does not match the working day ${workingSlot.workingDay.day}`
-  //   );
-  // }
-
-  // Normalize consultDate to include the slot's start time for consistency
-  // workingSlot.startTime = "08:00.000Z"
-  // 🌍 UTC HANDLING: Always use setUTCHours() to ensure times are interpreted in UTC,
-  // preventing timezone-related issues on VPS servers with different local timezones
-  const timePart = workingSlot.startTime.split(".")[0]; // "08:00"
-  const [hours, minutes] = timePart.split(":").map(Number);
-
-  if (isNaN(hours) || isNaN(minutes)) {
-    throw new Error("Invalid workingSlot.startTime format");
-  }
-
-  // Apply to inputDate using UTC
-  inputDate.setUTCHours(hours, minutes, 0, 0);
-
-  if (inputDate.getTime() < Date.now()) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Cannot book an appointment for a past time slot");
-  }
-
-  // 3️⃣ Check Capacity
-  const existingAppointmentsCount = await prisma.bookingAppointment.count({
-    where: {
-      // workingSlotId,
-      doctorId,
-      clinicId: clinic.clinic.id,
-      consultDate: {
-        equals: inputDate,
-      },
-      status: {
-        not: BookingStatus.CANCELLED,
-      },
-    },
-  });
-
-  if (existingAppointmentsCount >= workingSlot.capacity) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Slot is fully booked");
-  }
-
-  // const slotDoctorId = workingSlot.workingDay.doctorId;
-  // const slotClinicId = workingSlot.workingDay.doctor.clinicId;
-
-  // if (doctorId !== slotDoctorId) {
-  //     throw new ApiError(httpStatus.BAD_REQUEST, "Doctor ID does not match the working slot");
-  // }
-
-  // 4️⃣ Create Booking
-  // Serial numbers are shared by every doctor and slot in the clinic for one
-  // calendar day. consultDate includes the slot start time, so use a UTC day
-  // range instead of exact timestamp equality.
-  const serialDayStart = new Date(inputDate);
-  serialDayStart.setUTCHours(0, 0, 0, 0);
-
-  const serialDayEnd = new Date(serialDayStart);
-  serialDayEnd.setUTCDate(serialDayEnd.getUTCDate() + 1);
-
-  const result = await prisma.$transaction(async (tx) => {
-    // Find the clinic's latest serial for the requested calendar day.
-    const lastBooking = await tx.bookingAppointment.findFirst({
-      where: {
-        clinicId: clinicEntity.id,
-        consultDate: {
-          gte: serialDayStart,
-          lt: serialDayEnd,
-        },
-      },
-      orderBy: {
-        serialNumber: "desc",
-      },
-    });
-
-    const nextSerialNumber = lastBooking ? lastBooking.serialNumber + 1 : 1;
-
-    const booking = await tx.bookingAppointment.create({
-      data: {
-        patientId: patientId,
-        doctorId: doctorId,
-        clinicId: clinicEntity.id,
-        // workingSlotId: workingSlotId,
-        consultDate: inputDate,
-        status: BookingStatus.PENDING,
-        startTime: workingSlot.startTime,
-        endTime: workingSlot.endTime,
-        serialNumber: nextSerialNumber,
-        clinicServiceFee: 0,
-        patientServiceFee: patientServiceFee.amount,
-      },
-    });
-
-    // Decrement patient service wallet
-    await tx.user.update({
-      where: { id: user.id },
-      data: {
-        wallet: {
-          decrement: patientServiceFee.amount,
-        },
-      },
-    });
-
-    // Admin wallet
-    await tx.user.update({
-      where: { id: adminUser.id },
-      data: {
-        wallet: {
-          increment: patientServiceFee.amount,
-        },
-      },
-    });
-
-    // Crete top up history
-    await tx.topUp.create({
-      data: {
-        userId: user.id,
-        amount: patientServiceFee.amount,
-        appointmentId: booking.id,
-        type: TopUpType.BOOKING,
-      },
-    });
-
-    return booking;
-  });
-
-  // Schedule PENDING_TIMEOUT job 30 minutes after slot endTime if clinic ignores the booking
-  try {
-    await BookingSchedulerService.schedulePendingBookingTimeout({
-      appointmentId: result.id,
-      patientId: result.patientId,
-      patientUserId: user.id,
-      clinicUserId: clinic.id,          // User.id of the clinic user
-      adminUserId: adminUser.id,
-      patientServiceFee: patientServiceFee.amount,
-      consultDate: result.consultDate,
-      endTime: result.endTime!,
-    });
-    console.log(`⏳ Scheduled PENDING_TIMEOUT for appointment ${result.id}`);
-  } catch (err) {
-    console.error(`⚠️ Failed to schedule pending timeout for ${result.id}:`, err);
-    // Non-fatal — booking was already created
-  }
-
-  // Send notification to clinic (outside transaction to avoid foreign key constraint error)
-  await Notification.ClinicNotification(
-    result.id,
-    clinicEntity.id,
-    "New Appointment",
-    clinic?.fcmToken || "",
-  );
-
-  return result;
+  return {
+    advanceBookingDays: settings?.advanceBookingDays ?? 14,
+    cancellationCutoffHours: settings?.cancellationCutoffHours ?? 12,
+  };
 };
 
 const cancelAppointment = async (userId: string, bookingId: string) => {
   return await BookingService.cancelBooking(bookingId, userId, "PATIENT");
-};
-
-const acceptAppointment = async (userId: string, bookingId: string) => {
-  // This might be used if a patient needs to confirm a tentative slot or similar workflow
-  const appointment = await prisma.bookingAppointment.findFirst({
-    where: {
-      id: bookingId,
-      patient: {
-        userId: userId,
-      },
-    },
-  });
-
-  if (!appointment) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Appointment not found");
-  }
-
-  if (appointment.status === BookingStatus.CONFIRMED) {
-    throw new ApiError(
-      httpStatus.BAD_REQUEST,
-      "Appointment is already confirmed",
-    );
-  }
-
-  const result = await prisma.bookingAppointment.update({
-    where: {
-      id: bookingId,
-    },
-    data: {
-      status: BookingStatus.CONFIRMED,
-    },
-  });
-
-  return result;
 };
 
 const getAppointmentHistory = async (
@@ -1500,6 +1272,13 @@ const getAppointmentHistory = async (
       status: true,
       startTime: true,
       endTime: true,
+      approximateEstimatedTime: true,
+      bookedFor: true,
+      familyMemberName: true,
+      familyMemberRelation: true,
+      cancellationReason: true,
+      rejectionReason: true,
+      noShowReason: true,
       doctor: {
         select: {
           speciality: true,
@@ -1640,8 +1419,8 @@ export const PatientService = {
   getClinicDoctors,
   getDoctor,
   bookingAppointment,
+  getPatientBookingSettings,
   cancelAppointment,
-  acceptAppointment,
   getAppointmentHistory,
   createPatientInsurance,
   updatePatientInsurance,

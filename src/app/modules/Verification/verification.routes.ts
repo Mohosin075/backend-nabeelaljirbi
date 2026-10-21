@@ -38,6 +38,7 @@ router.get(
 router.get(
   "/admin/list",
   auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS, AdminTier.SUPPORT, AdminTier.READ_ONLY),
   VerificationController.getAdminVerifications
 );
 

@@ -45,6 +45,13 @@ const updateBookingStatusValidationSchema = z.object({
   }),
 });
 
+const respondJoinRequestValidationSchema = z.object({
+  body: z.object({
+    status: z.enum(["ACCEPTED", "REJECTED"]),
+    note: z.string().max(1000).optional(),
+  }),
+});
+
 const executeDoctorAbsenceValidationSchema = z.object({
   body: z.object({
     doctorId: z.string({ required_error: "Doctor ID is required" }),
@@ -59,5 +66,6 @@ export const clinicValidation = {
   createClinicInsuranceValidationSchema,
   createPhotoGalleryValidationSchema,
   updateBookingStatusValidationSchema,
+  respondJoinRequestValidationSchema,
   executeDoctorAbsenceValidationSchema,
 };

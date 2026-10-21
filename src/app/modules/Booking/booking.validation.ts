@@ -9,13 +9,22 @@ const createBookingValidationSchema = z.object({
       consultDate: z.string().optional(),
       date: z.string().optional(),
       bookedFor: z.enum(["SELF", "FAMILY"]).optional().default("SELF"),
-      familyMemberName: z.string().optional(),
-      familyMemberRelation: z.string().optional(),
+      familyMemberName: z.string().trim().min(1).max(100).optional(),
+      familyMemberRelation: z.enum(["SPOUSE", "CHILD", "PARENT", "SIBLING", "OTHER"]).optional(),
     })
     .refine((data) => !!(data.consultDate || data.date), {
       message: "consultDate is required",
       path: ["consultDate"],
-    }),
+    })
+    .refine(
+      (data) =>
+        data.bookedFor !== "FAMILY" ||
+        (!!data.familyMemberName?.trim() && !!data.familyMemberRelation),
+      {
+        message: "Family member name and relation are required for family bookings",
+        path: ["familyMemberName"],
+      },
+    )
 });
 
 const approveBookingValidationSchema = z.object({

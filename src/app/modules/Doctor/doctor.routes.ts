@@ -14,7 +14,7 @@ const insuranceFileUpload = s3Uploader.single("image");
 
 router.patch(
   "/profile-update",
-  auth(),
+  auth(UserRole.DOCTOR),
   fileUpload,
   // validateRequest(doctorValidation.updateDoctorProfileValidationSchema),
   DoctorController.updateDoctorProfile
@@ -22,75 +22,77 @@ router.patch(
 
 router.get(
   "/profile",
-  auth(),
+  auth(UserRole.DOCTOR),
   DoctorController.getDoctorProfile
 );
 
 router.post(
   "/working-hours",
-  auth(),
+  auth(UserRole.DOCTOR),
+  validateRequest(doctorValidation.addWorkingHoursValidationSchema),
   DoctorController.addWorkingHours
 );
 
 router.get(
   "/working-hours",
-  auth(),
+  auth(UserRole.DOCTOR),
   DoctorController.getWorkingHoursByDay
 );
 
 router.get(
   "/appointments",
-  auth(),
+  auth(UserRole.DOCTOR),
   DoctorController.getAppointments
 );
 
 router.post(
   "/insurance",
-  auth(),
+  auth(UserRole.DOCTOR),
   insuranceFileUpload,
   DoctorController.createDoctorInsurance
 );
 
 router.get(
   "/insurance",
-  auth(),
+  auth(UserRole.DOCTOR),
   DoctorController.getDoctorInsurances
 );
 
 router.patch(
   "/insurance/:insuranceId",
-  auth(),
+  auth(UserRole.DOCTOR),
   insuranceFileUpload,
   DoctorController.updateDoctorInsurance
 );
 
 router.delete(
   "/insurance/:insuranceId",
-  auth(),
+  auth(UserRole.DOCTOR),
   DoctorController.deleteDoctorInsurance
 );
 
 router.post(
   "/join-request",
-  auth(),
+  auth(UserRole.DOCTOR),
+  validateRequest(doctorValidation.requestJoinClinicValidationSchema),
   DoctorController.requestJoinClinic
 );
 
 router.get(
   "/join-requests",
-  auth(),
+  auth(UserRole.DOCTOR),
   DoctorController.getDoctorJoinRequests
 );
 
 router.delete(
   "/join-request/:requestId",
-  auth(),
+  auth(UserRole.DOCTOR),
   DoctorController.cancelJoinRequest
 );
 
 router.get(
   "/reconciliation-reports",
-  auth(),
+  auth(UserRole.DOCTOR),
   DoctorController.getReconciliationReports
 );
 

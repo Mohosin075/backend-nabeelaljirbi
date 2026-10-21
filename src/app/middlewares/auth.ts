@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 
 import httpStatus from "http-status";
+import { UserStatus } from "@prisma/client";
 import { Secret } from "jsonwebtoken";
 import config from "../../config";
 import ApiError from "../../errors/ApiErrors";
@@ -46,6 +47,10 @@ const auth = (...roles: string[]) => {
 
       if (!user) {
         throw new ApiError(httpStatus.NOT_FOUND, "This user is not found !");
+      }
+
+      if (user.banned || user.status !== UserStatus.ACTIVE) {
+        throw new ApiError(httpStatus.FORBIDDEN, "This account is not active");
       }
 
       let effectiveRole = user.role || verifiedUser.role;

@@ -157,7 +157,12 @@ router.get(
 );
 
 // 3. Platform Booking Settings
-router.get("/booking-settings", auth(UserRole.ADMIN), AdminController.getBookingSettings);
+router.get(
+  "/booking-settings",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS, AdminTier.READ_ONLY),
+  AdminController.getBookingSettings
+);
 router.patch(
   "/booking-settings",
   auth(UserRole.ADMIN),
@@ -168,12 +173,14 @@ router.patch(
 // 4. Settlements (Finance & Super Admin)
 router.get(
   "/settlements",
-  auth(UserRole.ADMIN, UserRole.CLINIC, UserRole.MANAGER),
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.READ_ONLY),
   AdminController.getSettlements
 );
 router.post(
   "/settlements",
-  auth(UserRole.ADMIN, UserRole.CLINIC, UserRole.MANAGER),
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
   AdminController.createSettlement
 );
 router.patch(

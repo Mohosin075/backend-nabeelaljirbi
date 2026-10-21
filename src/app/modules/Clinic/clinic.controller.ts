@@ -235,11 +235,12 @@ const updateBookingStatus = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { bookingId, status, reason } = req.body;
 
-  const result = await ClinicService.updateBookingStatus(
+  const result = await ClinicService.updateAppointmentStatus(
     userId!,
     bookingId,
     status,
     reason,
+    req.user?.role,
   );
 
   sendResponse(res, {
@@ -315,11 +316,12 @@ const managerUpdateAppointmentStatus = catchAsync(
     const userId = req.user.id;
     const { bookingId, status, reason } = req.body;
 
-    const result = await ClinicService.managerUpdateAppointmentStatus(
+    const result = await ClinicService.updateAppointmentStatus(
       userId,
       bookingId,
       status,
       reason,
+      req.user?.role,
     );
 
     sendResponse(res, {

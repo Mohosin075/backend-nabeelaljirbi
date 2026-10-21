@@ -1,4 +1,4 @@
-import { BookingStatus, TopUpType, UserRole, WeekDay } from "@prisma/client";
+import { BookingStatus, Prisma, TopUpType, UserRole, WeekDay } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
 import { paginationHelpers } from "../../../utils/paginationHelper";
@@ -8,7 +8,7 @@ import { BookingSchedulerService } from "../../jobs/services/bookingScheduler.se
 import { broadcastBookingUpdate } from "../../../helpars/socket/socketHandler";
 import { Notification } from "../Notification/notification.service";
 import { NotificationTemplateService } from "../NotificationTemplate/notificationTemplate.service";
-import { checkCancellationAllowed } from "../../../utils/timezoneHelper";
+import { checkCancellationAllowed, getAppointmentStartUTC } from "../../../utils/timezoneHelper";
 
 type BookingActorRole = "PATIENT" | "DOCTOR" | "CLINIC" | "MANAGER" | "ADMIN" | "SYSTEM";
 
@@ -68,6 +68,16 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
     familyMemberRelation,
   } = payload;
 
+  if (
+    bookedFor === "FAMILY" &&
+    (!familyMemberName?.trim() || !familyMemberRelation)
+  ) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "Family member name and relation are required for family bookings",
+    );
+  }
+
   // 1. Fetch user & patient record
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -107,14 +117,14 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
     throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
   }
 
-  if (!clinic.adminVerified) {
+  if (!clinic.adminVerified || !clinic.isVisible) {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
-      "Clinic is not approved by admin and cannot accept appointments"
+      "Clinic is not approved or visible to patients and cannot accept appointments"
     );
   }
 
-  if (clinic.user?.banned || (clinic.user as any)?.status === "SUSPENDED") {
+  if (clinic.user?.banned || clinic.user?.status !== "ACTIVE") {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
       "Clinic is currently suspended and cannot accept appointments"
@@ -145,7 +155,7 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
     );
   }
 
-  if (doctor.user?.banned || (doctor.user as any)?.status === "SUSPENDED") {
+  if (doctor.user?.banned || doctor.user?.status !== "ACTIVE") {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
       "Doctor is currently suspended and cannot accept appointments"
@@ -154,7 +164,6 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
 
   // Verify doctor belongs to or is linked with the clinic
   const isLinkedToClinic =
-    doctor.clinicId === effectiveClinicId ||
     doctor.doctorClinics.some(
       (dc) => dc.clinicId === effectiveClinicId && dc.isActive
     );
@@ -176,7 +185,7 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
   today.setUTCHours(0, 0, 0, 0);
 
   const platformBookingSetting = await prisma.platformBookingSetting.findFirst();
-  const maxDays = clinic.advanceBookingDays || platformBookingSetting?.advanceBookingDays || 14;
+  const maxDays = platformBookingSetting?.advanceBookingDays ?? clinic.advanceBookingDays ?? 14;
   const maxAllowedDate = new Date(today);
   maxAllowedDate.setUTCDate(maxAllowedDate.getUTCDate() + maxDays);
   maxAllowedDate.setUTCHours(23, 59, 59, 999);
@@ -210,22 +219,23 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
   ];
   const targetDayOfWeek = weekDayMap[targetDate.getUTCDay()];
 
-  const workingDay = await prisma.workingDay.findFirst({
+  const clinicWorkingDay = await prisma.workingDay.findFirst({
     where: {
       doctorId,
-      OR: [
-        { clinicId: effectiveClinicId },
-        { clinicId: null },
-      ],
+      clinicId: effectiveClinicId,
       day: targetDayOfWeek,
       isActive: true,
     },
-    orderBy: [
-      { clinicId: "desc" },
-    ],
-    include: {
-      slots: true,
+    include: { slots: true },
+  });
+  const workingDay = clinicWorkingDay ?? await prisma.workingDay.findFirst({
+    where: {
+      doctorId,
+      clinicId: null,
+      day: targetDayOfWeek,
+      isActive: true,
     },
+    include: { slots: true },
   });
 
   if (!workingDay) {
@@ -247,6 +257,18 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
     );
   }
 
+  const appointmentStartUTC = getAppointmentStartUTC(
+    targetDate,
+    workingSlot.startTime,
+    clinic.timezone,
+  );
+  if (appointmentStartUTC.getTime() <= Date.now()) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "This working period has already started and can no longer be booked",
+    );
+  }
+
   const dayStart = new Date(targetDate);
   dayStart.setUTCHours(0, 0, 0, 0);
   const dayEnd = new Date(targetDate);
@@ -254,7 +276,7 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
 
   // 7. Financial calculation: Percentage-based service fee and Collection Mode
   const consultFee = doctor.consultFee || 0;
-  const serviceFeePercentage = clinic.serviceFeePercentage || 10.0;
+  const serviceFeePercentage = clinic.serviceFeePercentage ?? 10.0;
   const serviceFeeAmount = Number(
     ((consultFee * serviceFeePercentage) / 100).toFixed(2)
   );
@@ -287,7 +309,9 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
   }
 
   // 9. Execute transaction: Atomically verify capacity, freeze wallet hold & create booking request
-  const booking = await prisma.$transaction(async (tx) => {
+  let booking;
+  try {
+    booking = await prisma.$transaction(async (tx) => {
     // Atomic capacity check inside transaction to prevent race conditions & overbooking
     const existingActiveBookingsCount = await tx.bookingAppointment.count({
       where: {
@@ -316,8 +340,18 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
       );
     }
 
-    // Atomic next queue/serial number
-    const serialNumber = existingActiveBookingsCount + 1;
+    // Serial numbers are clinic-wide for a calendar day and are never reused
+    // after a cancellation. The estimate still uses the active position in
+    // this specific working period.
+    const latestDailySerial = await tx.bookingAppointment.aggregate({
+      where: {
+        clinicId: effectiveClinicId,
+        consultDate: { gte: dayStart, lte: dayEnd },
+      },
+      _max: { serialNumber: true },
+    });
+    const serialNumber = (latestDailySerial._max.serialNumber ?? 0) + 1;
+    const queuePosition = existingActiveBookingsCount + 1;
 
     // Approximate estimated time derivation (clearly marked as estimate)
     let approximateEstimatedTime: string | null = null;
@@ -332,7 +366,7 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
             Math.floor(totalMinutes / workingSlot.capacity)
           );
           const estMinutes =
-            startH * 60 + startM + (serialNumber - 1) * avgMinutesPerPatient;
+            startH * 60 + startM + (queuePosition - 1) * avgMinutesPerPatient;
           const estH = Math.floor(estMinutes / 60) % 24;
           const estM = estMinutes % 60;
           approximateEstimatedTime = `${String(estH).padStart(2, "0")}:${String(
@@ -342,6 +376,37 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
       }
       if (!approximateEstimatedTime) {
         approximateEstimatedTime = workingSlot.startTime;
+      }
+    }
+
+    // Recheck spendable balances inside the serializable transaction. The
+    // earlier checks are for quick feedback; concurrent bookings must not
+    // over-freeze either wallet.
+    if (holdAmount > 0) {
+      const patientWallet = await tx.user.findUnique({
+        where: { id: user.id },
+        select: { wallet: true, frozenWallet: true },
+      });
+      const patientAvailable = Math.max(
+        0,
+        (patientWallet?.wallet ?? 0) - (patientWallet?.frozenWallet ?? 0),
+      );
+      if (patientAvailable < holdAmount) {
+        throw new ApiError(httpStatus.CONFLICT, "Wallet balance changed. Please refresh and try again.");
+      }
+    }
+
+    if (clinicServiceFee > 0 && clinic.userId) {
+      const clinicWallet = await tx.user.findUnique({
+        where: { id: clinic.userId },
+        select: { wallet: true, frozenWallet: true },
+      });
+      const clinicAvailable = Math.max(
+        0,
+        (clinicWallet?.wallet ?? 0) - (clinicWallet?.frozenWallet ?? 0),
+      );
+      if (clinicAvailable < clinicServiceFee) {
+        throw new ApiError(httpStatus.CONFLICT, "Clinic wallet balance is insufficient for this booking.");
       }
     }
 
@@ -460,8 +525,17 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
       },
     });
 
-    return createdBooking;
-  });
+      return createdBooking;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
+      throw new ApiError(
+        httpStatus.CONFLICT,
+        "Availability changed while booking. Please refresh and try again."
+      );
+    }
+    throw error;
+  }
 
   // 10. Schedule pending timeout: Period start time is the clinic response deadline
   try {
@@ -478,7 +552,7 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
         adminUserId: adminUser.id,
         patientServiceFee: booking.patientServiceFee,
         consultDate: booking.consultDate,
-        endTime: workingSlot.startTime || workingSlot.endTime, // deadline is period start time!
+        deadlineTime: workingSlot.startTime,
       });
     }
   } catch (scheduleError) {
@@ -644,11 +718,15 @@ const confirmBooking = async (
     }
 
     // 6. Update booking status to CONFIRMED
-    const confirmed = await tx.bookingAppointment.update({
+    const claimed = await tx.bookingAppointment.updateMany({
+      where: { id: appointmentId, status: BookingStatus.PENDING },
+      data: { status: BookingStatus.CONFIRMED },
+    });
+    if (claimed.count !== 1) {
+      throw new ApiError(httpStatus.CONFLICT, "This booking has already been handled");
+    }
+    const confirmed = await tx.bookingAppointment.findUniqueOrThrow({
       where: { id: appointmentId },
-      data: {
-        status: BookingStatus.CONFIRMED,
-      },
     });
 
     // 7. Patient notification with queue position and estimated time
@@ -766,6 +844,58 @@ const confirmBooking = async (
   return updatedBooking;
 };
 
+const markPatientArrived = async (appointmentId: string, patientUserId: string) => {
+  const appointment = await prisma.bookingAppointment.findUnique({
+    where: { id: appointmentId },
+    include: {
+      patient: { select: { userId: true } },
+      clinic: { select: { userId: true } },
+      doctor: { select: { userId: true } },
+    },
+  });
+
+  if (!appointment) {
+    throw new ApiError(httpStatus.NOT_FOUND, "Appointment not found");
+  }
+
+  await assertBookingActor(appointment, patientUserId, "PATIENT", ["PATIENT"]);
+  if (appointment.status !== BookingStatus.CONFIRMED) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      `Cannot mark appointment as arrived with status ${appointment.status}`,
+    );
+  }
+
+  const updated = await prisma.bookingAppointment.updateMany({
+    where: { id: appointmentId, patientId: appointment.patientId, status: BookingStatus.CONFIRMED },
+    data: { status: BookingStatus.ARRIVED },
+  });
+  if (updated.count !== 1) {
+    throw new ApiError(httpStatus.CONFLICT, "This booking has already been handled");
+  }
+
+  const result = await prisma.bookingAppointment.findUniqueOrThrow({
+    where: { id: appointmentId },
+  });
+  try {
+    broadcastBookingUpdate({
+      bookingId: result.id,
+      status: BookingStatus.ARRIVED,
+      clinicId: appointment.clinicId,
+      doctorId: appointment.doctorId,
+      patientId: appointment.patientId,
+      patientUserId: appointment.patient.userId,
+      clinicUserId: appointment.clinic.userId,
+      doctorUserId: appointment.doctor.userId,
+      serialNumber: appointment.serialNumber,
+      consultDate: appointment.consultDate,
+    });
+  } catch (wsErr) {
+    console.error("WS broadcast error on patient arrival:", wsErr);
+  }
+  return result;
+};
+
 /**
  * Rejection / silence by deadline unfreezes full hold and moves booking to REJECTED or CANCELLED
  */
@@ -792,7 +922,7 @@ const rejectBooking = async (
     appointment,
     callerUserId,
     cancelledBy,
-    ["PATIENT", "CLINIC", "MANAGER", "ADMIN", "SYSTEM"],
+    ["PATIENT", "DOCTOR", "CLINIC", "MANAGER", "ADMIN", "SYSTEM"],
   );
 
   if (appointment.status !== BookingStatus.PENDING) {
@@ -838,14 +968,20 @@ const rejectBooking = async (
       });
     }
 
-    const updated = await tx.bookingAppointment.update({
-      where: { id: appointmentId },
+    const claimed = await tx.bookingAppointment.updateMany({
+      where: { id: appointmentId, status: BookingStatus.PENDING },
       data: {
         status: newStatus,
         rejectionReason: reasonText,
         cancelledBy,
         cancellationReason: reasonText,
       },
+    });
+    if (claimed.count !== 1) {
+      throw new ApiError(httpStatus.CONFLICT, "This booking has already been handled");
+    }
+    const updated = await tx.bookingAppointment.findUniqueOrThrow({
+      where: { id: appointmentId },
     });
 
     // Notify patient
@@ -948,45 +1084,65 @@ const getBookings = async (userId: string, role: string, options: any) => {
 
   const { status, doctorId, clinicId, date } = options;
 
-  let where: any = {};
+  let scope: any = {};
   if (role === "PATIENT") {
-    // If user is patient role, map userId to patient.id or match user.id
     const patient = await prisma.patient.findUnique({
       where: { userId },
     });
-    where.patientId = patient ? patient.id : userId;
+    scope.patientId = patient?.id ?? "__missing_patient__";
   } else if (role === "DOCTOR") {
     const doctor = await prisma.doctor.findUnique({
       where: { userId },
     });
-    where.doctorId = doctor ? doctor.id : userId;
+    scope.doctorId = doctor?.id ?? "__missing_doctor__";
   } else if (role === "CLINIC") {
     const clinic = await prisma.clinic.findUnique({
       where: { userId },
     });
-    where.clinicId = clinic ? clinic.id : userId;
+    scope.clinicId = clinic?.id ?? "__missing_clinic__";
+  } else if (role === "MANAGER") {
+    const manager = await prisma.manager.findUnique({
+      where: { userId },
+      select: { clinicId: true },
+    });
+    scope.clinicId = manager?.clinicId ?? "__missing_manager_clinic__";
+  } else if (role !== "ADMIN") {
+    throw new ApiError(httpStatus.FORBIDDEN, "You are not authorized to view bookings");
   }
 
+  const filters: Prisma.BookingAppointmentWhereInput = {};
   if (status) {
-    where.status = status;
+    if (!Object.values(BookingStatus).includes(status as BookingStatus)) {
+      throw new ApiError(httpStatus.BAD_REQUEST, "Invalid booking status");
+    }
+    filters.status = status as BookingStatus;
   }
   if (doctorId) {
-    where.doctorId = doctorId;
+    filters.doctorId = doctorId;
   }
   if (clinicId) {
-    where.clinicId = clinicId;
+    filters.clinicId = clinicId;
   }
   if (date) {
     const queryDate = new Date(date);
+    if (isNaN(queryDate.getTime())) {
+      throw new ApiError(httpStatus.BAD_REQUEST, "Invalid booking date");
+    }
     const dStart = new Date(queryDate);
     dStart.setUTCHours(0, 0, 0, 0);
     const dEnd = new Date(queryDate);
     dEnd.setUTCHours(23, 59, 59, 999);
-    where.consultDate = {
+    filters.consultDate = {
       gte: dStart,
       lte: dEnd,
     };
   }
+
+  // Keep caller scope separate from filters so query parameters can only narrow
+  // results; they must never replace a patient's/clinic's/doctor's ownership scope.
+  const where: Prisma.BookingAppointmentWhereInput = {
+    AND: [scope, filters],
+  };
 
   const bookings = await prisma.bookingAppointment.findMany({
     where,
@@ -1048,8 +1204,10 @@ const getBookings = async (userId: string, role: string, options: any) => {
  * 6 — Cancellation & Refunds
  * One engine handles every cancellation path — there is no rescheduling mechanism anywhere in the system.
  * - Patient-initiated cancellation is cancel-and-rebook: available up to 12 hours before the appointment, hard-blocked server-side after that point.
- * - Any cancellation before the cutoff returns a full refund of both the consultation amount and the service fee;
- * - A clinic- or doctor-initiated cancellation after confirmation refunds the patient in full, at any time.
+ * - Patient cancellation is allowed only before the configured cutoff.
+ * - Once confirmed, the patient service fee is captured and never refunded;
+ *   any collected consultation fee is refunded when a confirmed booking is cancelled.
+ * - Pending cancellation releases the full hold because no amount has been captured.
  */
 const cancelBooking = async (
   appointmentId: string,
@@ -1100,7 +1258,12 @@ const cancelBooking = async (
   if (booking.status === BookingStatus.PENDING) {
     const cancelReason =
       reason?.trim() || `Cancelled by ${cancelledBy.toLowerCase()}`;
-    return await rejectBooking(appointmentId, cancelReason, cancelledBy);
+    return await rejectBooking(
+      appointmentId,
+      cancelReason,
+      callerRole || cancelledBy,
+      callerUserId,
+    );
   }
 
   // Case 2: If status is CONFIRMED, ARRIVED, or INPROGRESS
@@ -1113,7 +1276,7 @@ const cancelBooking = async (
     if (booking.refundPatient || booking.returnPatientBalance) {
       throw new ApiError(
         httpStatus.BAD_REQUEST,
-        "Refund has already been processed for this appointment"
+        "Cancellation settlement has already been processed for this appointment"
       );
     }
 
@@ -1142,39 +1305,16 @@ const cancelBooking = async (
       }
     }
 
-    // 2. Fetch admin user for platform ledger transactions
-    let adminUser = await prisma.user.findUnique({
-      where: { phoneNumber: `${process.env.ADMIN_PHONE_NUMBER}` },
-    });
-    if (!adminUser) {
-      adminUser = await prisma.user.findFirst({
-        where: { role: UserRole.ADMIN },
-      });
-    }
-
-    if (!adminUser) {
-      throw new ApiError(httpStatus.NOT_FOUND, "Admin user not found");
-    }
-
     const patientUserId = booking.patient.userId;
     const clinicUserId = booking.clinic.userId;
-    const serviceFeeAmount =
-      booking.serviceFeeAmount || booking.patientServiceFee || 0;
     const consultFee = booking.consultFee || 0;
     const collectionMode = booking.collectionMode || "MODE_A";
 
-    /**
-     * Section 6 Full Refund Calculation:
-     * - Before cutoff (patient) OR at any time (clinic/doctor/admin):
-     *   "returns a full refund of both the consultation amount and the service fee"
-     *   Mode A: patient paid serviceFeeAmount -> 100% of serviceFeeAmount refunded.
-     *   Mode B: patient paid serviceFeeAmount + consultFee -> 100% of (serviceFeeAmount + consultFee) refunded.
-     */
+    // The one-policy rule takes precedence after confirmation: keep the
+    // captured platform service fee; refund only the consultation amount paid
+    // in Mode B. Mode A has no patient consultation charge to refund.
     const refundConsultFee = collectionMode === "MODE_B" ? consultFee : 0;
-    const refundServiceFee = serviceFeeAmount;
-    const totalRefundToPatient = Number(
-      (refundConsultFee + refundServiceFee).toFixed(2)
-    );
+    const totalRefundToPatient = Number(refundConsultFee.toFixed(2));
     const cancelReasonText =
       reason?.trim() || `Cancelled by ${cancelledBy.toLowerCase()}`;
 
@@ -1198,26 +1338,7 @@ const cancelBooking = async (
         });
       }
 
-      // Step B: Reclaim service fee from admin (platform) wallet
-      if (refundServiceFee > 0 && adminUser!.id) {
-        await tx.user.update({
-          where: { id: adminUser!.id },
-          data: {
-            wallet: { decrement: refundServiceFee },
-          },
-        });
-
-        await tx.topUp.create({
-          data: {
-            userId: adminUser!.id,
-            amount: refundServiceFee,
-            appointmentId: booking.id,
-            type: TopUpType.REFUND,
-          },
-        });
-      }
-
-      // Step C: Refund 100% full amount (consultation + service fee) to patient wallet
+      // Step B: Refund the eligible consultation amount to the patient wallet.
       if (totalRefundToPatient > 0 && patientUserId) {
         await tx.user.update({
           where: { id: patientUserId },
@@ -1236,46 +1357,9 @@ const cancelBooking = async (
         });
       }
 
-      // Step D: If patient cancelled with valid advance notice (≥12h) and clinic had paid clinicServiceFee > 0:
-      // Refund clinicServiceFee back to clinic from admin
-      if (
-        isPatient &&
-        booking.clinicServiceFee > 0 &&
-        clinicUserId &&
-        adminUser!.id
-      ) {
-        await tx.user.update({
-          where: { id: clinicUserId },
-          data: { wallet: { increment: booking.clinicServiceFee } },
-        });
-
-        await tx.user.update({
-          where: { id: adminUser!.id },
-          data: { wallet: { decrement: booking.clinicServiceFee } },
-        });
-
-        await tx.topUp.create({
-          data: {
-            userId: clinicUserId,
-            amount: booking.clinicServiceFee,
-            appointmentId: booking.id,
-            type: TopUpType.REFUND,
-          },
-        });
-
-        await tx.topUp.create({
-          data: {
-            userId: adminUser!.id,
-            amount: booking.clinicServiceFee,
-            appointmentId: booking.id,
-            type: TopUpType.REFUND,
-          },
-        });
-      }
-
       // Step E: Update booking record
-      const updated = await tx.bookingAppointment.update({
-        where: { id: appointmentId },
+      const claimed = await tx.bookingAppointment.updateMany({
+        where: { id: appointmentId, status: booking.status },
         data: {
           status: BookingStatus.CANCELLED,
           cancelledBy,
@@ -1284,23 +1368,24 @@ const cancelBooking = async (
           returnPatientBalance: true,
         },
       });
+      if (claimed.count !== 1) {
+        throw new ApiError(httpStatus.CONFLICT, "This booking has already been handled");
+      }
+      const updated = await tx.bookingAppointment.findUniqueOrThrow({
+        where: { id: appointmentId },
+      });
 
-      // Step F: Patient notification with clear full refund details
-      const refundMsg =
-        totalRefundToPatient > 0
-          ? `A full refund of ${totalRefundToPatient} LYD (${
-              refundConsultFee > 0
-                ? `Consultation: ${refundConsultFee} LYD + Service Fee: ${refundServiceFee} LYD`
-                : `Service Fee: ${refundServiceFee} LYD`
-            }) has been credited to your wallet.`
-          : ``;
+      // Step F: Explain consultation refund and retained service fee clearly.
+      const refundMsg = totalRefundToPatient > 0
+        ? `A consultation refund of ${totalRefundToPatient} LYD has been credited to your wallet. The captured service fee is non-refundable.`
+        : "The service fee was captured when the booking was confirmed and is non-refundable.";
 
       await tx.patientNotification.create({
         data: {
           patientId: booking.patientId,
           bookingAppointmentId: booking.id,
           notificationType: "APPOINTMENT_CANCELLED",
-          title: "Appointment Cancelled & 100% Refunded",
+          title: "Appointment Cancelled",
           description: `Your appointment with Dr. ${
             booking.doctor?.user?.fullName || "Doctor"
           } on ${new Date(
@@ -1373,8 +1458,8 @@ const cancelBooking = async (
               booking.clinic?.clinicName || (isEn ? "Clinic" : "العيادة"),
             date: new Date(booking.consultDate).toISOString().split("T")[0],
             refundNotice: isEn
-              ? "The full service fee has been refunded to your wallet."
-              : "تم استرداد المبلغ بالكامل إلى محفظتك.",
+              ? `Consultation refund: ${refundConsultFee} LYD. The service fee is non-refundable.`
+              : `المبلغ المسترد للاستشارة: ${refundConsultFee} دينار ليبي. رسوم الخدمة غير قابلة للاسترداد.`,
             cancelledBy: cancelledBy,
             patientName:
               booking.patient?.user?.fullName || (isEn ? "Patient" : "المريض"),
@@ -1439,9 +1524,15 @@ const completeBooking = async (
     );
   }
 
-  const booking = await prisma.bookingAppointment.update({
-    where: { id: appointmentId },
+  const completed = await prisma.bookingAppointment.updateMany({
+    where: { id: appointmentId, status: { in: validPriorStatuses } },
     data: { status: BookingStatus.COMPLETE },
+  });
+  if (completed.count !== 1) {
+    throw new ApiError(httpStatus.CONFLICT, "This booking has already been handled");
+  }
+  const booking = await prisma.bookingAppointment.findUniqueOrThrow({
+    where: { id: appointmentId },
   });
 
   try {
@@ -1463,6 +1554,23 @@ const completeBooking = async (
     },
   });
 
+  try {
+    broadcastBookingUpdate({
+      bookingId: booking.id,
+      status: BookingStatus.COMPLETE,
+      clinicId: existing.clinicId,
+      doctorId: existing.doctorId,
+      patientId: booking.patientId,
+      patientUserId: existing.patient?.userId,
+      clinicUserId: existing.clinic?.userId,
+      doctorUserId: existing.doctor?.userId,
+      serialNumber: booking.serialNumber,
+      consultDate: booking.consultDate,
+    });
+  } catch (wsErr) {
+    console.error("WS broadcast error on completion:", wsErr);
+  }
+
   return booking;
 };
 
@@ -1470,6 +1578,7 @@ export const BookingService = {
   createBooking,
   getBookings,
   confirmBooking,
+  markPatientArrived,
   rejectBooking,
   cancelBooking,
   completeBooking,

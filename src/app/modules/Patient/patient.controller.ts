@@ -132,8 +132,9 @@ const getClinicDoctors = catchAsync(async (req: Request, res: Response) => {
 
 const getDoctor = catchAsync(async (req: Request, res: Response) => {
   const doctorId = req.params.doctorId;
+  const clinicId = typeof req.query.clinicId === "string" ? req.query.clinicId : undefined;
 
-  const result = await PatientService.getDoctor(doctorId);
+  const result = await PatientService.getDoctor(doctorId, clinicId);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -174,6 +175,17 @@ const bookingAppointment = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const getPatientBookingSettings = catchAsync(async (_req: Request, res: Response) => {
+  const result = await PatientService.getPatientBookingSettings();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Booking settings retrieved successfully",
+    data: result,
+  });
+});
+
 const cancelAppointment = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { bookingId } = req.params;
@@ -192,16 +204,12 @@ const cancelAppointment = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
-const acceptAppointment = catchAsync(async (req: Request, res: Response) => {
-  const userId = req.user?.id;
-  const { bookingId } = req.params;
-
-  const result = await PatientService.acceptAppointment(userId!, bookingId);
-
+const markAppointmentArrived = catchAsync(async (req: Request, res: Response) => {
+  const result = await BookingService.markPatientArrived(req.params.bookingId, req.user!.id);
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "Appointment confirmed successfully",
+    message: "Arrival recorded successfully",
     data: result,
   });
 });
@@ -320,8 +328,9 @@ export const PatientController = {
   getClinicDoctors,
   getDoctor,
   bookingAppointment,
+  getPatientBookingSettings,
   cancelAppointment,
-  acceptAppointment,
+  markAppointmentArrived,
   getAppointmentHistory,
   createPatientInsurance,
   updatePatientInsurance,

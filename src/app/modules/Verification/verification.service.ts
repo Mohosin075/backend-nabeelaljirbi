@@ -312,9 +312,25 @@ const reviewVerification = async (
   },
   currentAdmin?: any
 ) => {
-  const { targetId, type, action, adminNote, badgeActive } = payload;
+  const { targetId, type, action, adminNote } = payload;
 
   let result: any;
+
+  if (action === "APPROVED") {
+    const entity = type === "DOCTOR"
+      ? await prisma.doctor.findUnique({ where: { id: targetId }, select: { verificationDocuments: true } })
+      : await prisma.clinic.findUnique({ where: { id: targetId }, select: { verificationDocuments: true } });
+    if (!entity) throw new ApiError(httpStatus.NOT_FOUND, `${type === "DOCTOR" ? "Doctor" : "Clinic"} not found`);
+    const documents = Array.isArray(entity.verificationDocuments) ? entity.verificationDocuments : [];
+    const hasUsableDocument = documents.some((item: any) =>
+      item && typeof item === "object" &&
+      typeof item.title === "string" && item.title.trim() &&
+      typeof item.url === "string" && item.url.trim()
+    );
+    if (!hasUsableDocument) {
+      throw new ApiError(httpStatus.BAD_REQUEST, "At least one verification document is required before approval");
+    }
+  }
 
   if (type === "DOCTOR") {
     const doctor = await prisma.doctor.findUnique({
@@ -328,7 +344,9 @@ const reviewVerification = async (
         verificationStatus: action,
         verificationAdminNote: adminNote || null,
         verificationReviewedAt: new Date(),
-        badgeActive: action === "REJECTED" ? false : (badgeActive !== undefined ? badgeActive : doctor.badgeActive),
+        // Approval and public badge activation are separate admin actions.
+        // Never allow the review request itself to expose the badge.
+        badgeActive: false,
       },
     });
 
@@ -345,7 +363,9 @@ const reviewVerification = async (
         verificationStatus: action,
         verificationAdminNote: adminNote || null,
         verificationReviewedAt: new Date(),
-        badgeActive: action === "REJECTED" ? false : (badgeActive !== undefined ? badgeActive : clinic.badgeActive),
+        // Approval and public badge activation are separate admin actions.
+        // Never allow the review request itself to expose the badge.
+        badgeActive: false,
       },
     });
 
