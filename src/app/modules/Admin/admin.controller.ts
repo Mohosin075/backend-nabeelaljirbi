@@ -20,7 +20,7 @@ const AdminStats = catchAsync(async (req: Request, res: Response) => {
 
 const getDoctors = catchAsync(async (req: Request, res: Response) => {
   const options = pick(req.query, paginationFields);
-  const filters = pick(req.query, ["searchTerm", "search", "speciality", "clinicId"]) as any;
+  const filters = pick(req.query, ["searchTerm", "search", "speciality", "clinicId", "adminVerified"]) as any;
   if (req.query.search && !filters.searchTerm) {
     filters.searchTerm = req.query.search;
   }
@@ -79,6 +79,20 @@ const AdminClinicVerified = catchAsync(async (req: Request, res: Response) => {
     statusCode: httpStatus.OK,
     success: true,
     message: `Clinic ${adminVerified ? "verified" : "unverified"} successfully`,
+    data: result,
+  });
+});
+
+const AdminDoctorVerified = catchAsync(async (req: Request, res: Response) => {
+  const { doctorId } = req.params;
+  const { adminVerified } = req.body;
+
+  const result = await AdminService.AdminDoctorVerified(doctorId, adminVerified, (req as any).user);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: `Doctor ${adminVerified ? "verified" : "unverified"} successfully`,
     data: result,
   });
 });
@@ -479,6 +493,7 @@ export const AdminController = {
   getPatients,
   getClinics,
   AdminClinicVerified,
+  AdminDoctorVerified,
   updateClinicVisibility,
   AdminStats,
   bannedUser,

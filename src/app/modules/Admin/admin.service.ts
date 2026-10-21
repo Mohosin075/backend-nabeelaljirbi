@@ -59,7 +59,7 @@ const AdminStats = async () => {
 
 const getDoctors = async (filters: any, options: IPaginationOptions) => {
   const { limit, page, skip, sortBy, sortOrder } = paginationHelpers.calculatePagination(options);
-  const { searchTerm, speciality, clinicId } = filters;
+  const { searchTerm, speciality, clinicId, adminVerified } = filters;
 
   const andConditions: Prisma.UserWhereInput[] = [
     {
@@ -70,6 +70,14 @@ const getDoctors = async (filters: any, options: IPaginationOptions) => {
     },
     { status: { not: UserStatus.DELETED } }
   ];
+
+  if (adminVerified !== undefined) {
+    andConditions.push({
+      doctor: {
+        adminVerified: adminVerified === "true" || adminVerified === true,
+      },
+    });
+  }
 
   if (searchTerm) {
     andConditions.push({
@@ -135,6 +143,7 @@ const getDoctors = async (filters: any, options: IPaginationOptions) => {
           joinClinicDate: true,
           biography: true,
           qualifications: true,
+          adminVerified: true,
           clinic: {
             select: {
               clinicName: true,
@@ -174,6 +183,7 @@ const getDoctors = async (filters: any, options: IPaginationOptions) => {
     clinicLogo: user.doctor?.clinic?.logo,
     biography: user.doctor?.biography,
     qualifications: user.doctor?.qualifications,
+    adminVerified: user.doctor?.adminVerified ?? false,
   }));
 
   return {
@@ -429,6 +439,45 @@ const AdminClinicVerified = async (clinicId: string, adminVerified: boolean, cur
     targetType: "CLINIC",
     targetId: existingClinic.id,
     details: { clinicName: existingClinic.clinicName, adminVerified },
+  });
+
+  return result;
+};
+
+const AdminDoctorVerified = async (doctorId: string, adminVerified: boolean, currentAdmin?: any) => {
+  const existingDoctor = await prisma.doctor.findFirst({
+    where: {
+      OR: [
+        { id: doctorId },
+        { userId: doctorId },
+      ],
+    },
+    include: {
+      user: true,
+    },
+  });
+
+  if (!existingDoctor) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Doctor not found');
+  }
+
+  const result = await prisma.doctor.update({
+    where: {
+      id: existingDoctor.id,
+    },
+    data: {
+      adminVerified: adminVerified,
+    },
+  });
+
+  await createAuditLog({
+    adminId: currentAdmin?.id,
+    adminName: currentAdmin?.fullName,
+    adminTier: currentAdmin?.adminTier,
+    action: adminVerified ? "DOCTOR_VERIFIED" : "DOCTOR_UNVERIFIED",
+    targetType: "DOCTOR",
+    targetId: existingDoctor.id,
+    details: { doctorName: existingDoctor.user?.fullName, adminVerified },
   });
 
   return result;
@@ -2250,6 +2299,7 @@ export const AdminService = {
   getPatients,
   getClinics,
   AdminClinicVerified,
+  AdminDoctorVerified,
   updateClinicVisibility,
   AdminStats,
   bannedUser,

@@ -167,7 +167,18 @@ const getPopularDoctors = async (
   // console.log(search, rating, consultFee, speciality, city, country)
 
   // 1️⃣ Build Prisma WHERE conditions
-  const andConditions: Prisma.UserWhereInput[] = [{ role: UserRole.DOCTOR }];
+  const andConditions: Prisma.UserWhereInput[] = [
+    {
+      role: UserRole.DOCTOR,
+      status: { not: UserStatus.DELETED },
+      banned: false,
+      doctor: {
+        is: {
+          adminVerified: true,
+        },
+      },
+    },
+  ];
 
   if (city) {
     andConditions.push({ city });
@@ -893,6 +904,9 @@ const getClinicDoctors = async (
   // 2️⃣ Build Prisma WHERE conditions
   const andConditions: Prisma.UserWhereInput[] = [
     { role: UserRole.DOCTOR },
+    { status: { not: UserStatus.DELETED } },
+    { banned: false },
+    { doctor: { is: { adminVerified: true } } },
     {
       OR: [
         { doctor: { clinicId } },
@@ -1008,8 +1022,11 @@ const getDoctor = async (doctorId: string) => {
   const doctorUser = await prisma.user.findFirst({
     where: {
       role: UserRole.DOCTOR,
+      status: { not: UserStatus.DELETED },
+      banned: false,
       doctor: {
         id: doctorId,
+        adminVerified: true,
       },
     },
     include: {
@@ -1161,6 +1178,10 @@ const bookingAppointment = async (
     throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
   }
 
+  if (!doctor.adminVerified) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Doctor is not approved by admin and cannot accept appointments");
+  }
+
   if (doctor.user?.banned || doctor.user?.status === UserStatus.SUSPENDED) {
     throw new ApiError(httpStatus.BAD_REQUEST, "Doctor is currently suspended and cannot accept appointments");
   }
@@ -1186,6 +1207,10 @@ const bookingAppointment = async (
 
   if (!clinic || !clinic.clinic) {
     throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
+  }
+
+  if (!clinic.clinic.adminVerified) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Clinic is not approved by admin and cannot accept appointments");
   }
 
   if (clinic.banned || clinic.status === UserStatus.SUSPENDED) {

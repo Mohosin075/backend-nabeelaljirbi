@@ -193,6 +193,7 @@ model Doctor {
   clinic         Clinic?   @relation("DoctorClinic", fields: [clinicId], references: [id])
   chats          Chat[]
   badgeActive             Boolean   @default(false)
+  adminVerified           Boolean   @default(false)
   verificationStatus      String    @default("NOT_SUBMITTED")
   verificationDocuments   Json?
   verificationNotes       String?

@@ -41,6 +41,7 @@ const getDoctorProfile = async (userId: string) => {
           biography: true,
           qualifications: true,
           badgeActive: true,
+          adminVerified: true,
           verificationStatus: true,
           verificationDocuments: true,
           verificationAdminNote: true,
@@ -133,9 +134,6 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
     }
   }
 
-  const isClinicChanging =
-    Boolean(payload.clinicId) && user.doctor?.clinicId !== payload.clinicId;
-
   const parsedConsultFee = Number(payload.consultFee);
   const consultFeeVal =
     payload.consultFee !== undefined &&
@@ -185,8 +183,6 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
             experience: payload.experience ? payload.experience : undefined,
             licenseNumber: payload.licenseNumber,
             consultFee: consultFeeVal !== undefined ? consultFeeVal : undefined,
-            clinicId: payload.clinicId,
-            ...(payload.clinicId && { joinClinicDate: new Date() }),
             biography: payload.biography,
           },
           update: {
@@ -207,12 +203,6 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
             }),
             ...(consultFeeVal !== undefined && {
               consultFee: consultFeeVal,
-            }),
-            ...(payload.clinicId && {
-              clinicId: payload.clinicId,
-            }),
-            ...(isClinicChanging && {
-              joinClinicDate: new Date(),
             }),
             ...(payload.biography !== undefined && { biography: payload.biography }),
           },
@@ -252,6 +242,35 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
       },
     },
   });
+
+  if (payload.clinicId) {
+    const doctorRecord = await prisma.doctor.findUnique({
+      where: { userId },
+    });
+    if (doctorRecord) {
+      const alreadyLinked = await prisma.doctorClinic.findFirst({
+        where: { doctorId: doctorRecord.id, clinicId: payload.clinicId, isActive: true },
+      });
+      const pendingRequest = await prisma.doctorClinicRequest.findFirst({
+        where: { doctorId: doctorRecord.id, clinicId: payload.clinicId, status: "PENDING" },
+      });
+      if (!alreadyLinked && !pendingRequest) {
+        const clinicExists = await prisma.clinic.findUnique({
+          where: { id: payload.clinicId },
+        });
+        if (clinicExists) {
+          await prisma.doctorClinicRequest.create({
+            data: {
+              doctorId: doctorRecord.id,
+              clinicId: payload.clinicId,
+              status: "PENDING",
+              note: "Sent during profile registration",
+            },
+          });
+        }
+      }
+    }
+  }
 
   return updatedUser;
 };

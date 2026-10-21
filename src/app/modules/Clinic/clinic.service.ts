@@ -1609,7 +1609,18 @@ const getClinicManagerDoctor = async (
   };
 };
 
-const removeDoctorFromClinic = async (doctorId: string, clinicId: string) => {
+const removeDoctorFromClinic = async (doctorId: string, clinicUserIdOrId: string) => {
+  const clinic = await prisma.clinic.findFirst({
+    where: {
+      OR: [
+        { id: clinicUserIdOrId },
+        { userId: clinicUserIdOrId },
+      ],
+    },
+  });
+
+  const clinicId = clinic?.id || clinicUserIdOrId;
+
   const doctor = await prisma.doctor.findUnique({
     where: {
       id: doctorId,
@@ -1620,20 +1631,32 @@ const removeDoctorFromClinic = async (doctorId: string, clinicId: string) => {
     throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
   }
 
-  // if (doctor.clinicId !== clinicId) {
-  //   throw new ApiError(
-  //     httpStatus.BAD_REQUEST,
-  //     "Doctor is not associated with this clinic",
-  //   );
-  // }
-  await prisma.doctor.update({
+  // Remove link from DoctorClinic
+  await prisma.doctorClinic.deleteMany({
     where: {
-      id: doctorId,
-    },
-    data: {
-      clinicId: null,
+      doctorId: doctor.id,
+      clinicId: clinicId,
     },
   });
+
+  // If primary clinicId on Doctor matches this clinic, reassign or clear
+  if (doctor.clinicId === clinicId) {
+    const nextClinic = await prisma.doctorClinic.findFirst({
+      where: {
+        doctorId: doctor.id,
+        isActive: true,
+      },
+    });
+
+    await prisma.doctor.update({
+      where: {
+        id: doctorId,
+      },
+      data: {
+        clinicId: nextClinic ? nextClinic.clinicId : null,
+      },
+    });
+  }
 };
 
 const getDoctorAppointments = async (

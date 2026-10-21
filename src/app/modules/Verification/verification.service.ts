@@ -81,6 +81,7 @@ const getMyVerificationStatus = async (user: { id: string; role: string }) => {
       where: { userId: user.id },
       select: {
         id: true,
+        adminVerified: true,
         verificationStatus: true,
         badgeActive: true,
         verificationDocuments: true,
@@ -387,6 +388,13 @@ const toggleBadgeActivation = async (
     });
     if (!doctor) throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
 
+    if (badgeActive && doctor.verificationStatus !== "APPROVED") {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        "Blue verification badge can only be activated after documents have been reviewed and approved."
+      );
+    }
+
     const updated = await prisma.doctor.update({
       where: { id: targetId },
       data: { badgeActive },
@@ -397,6 +405,13 @@ const toggleBadgeActivation = async (
       where: { id: targetId },
     });
     if (!clinic) throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
+
+    if (badgeActive && clinic.verificationStatus !== "APPROVED") {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        "Blue verification badge can only be activated after documents have been reviewed and approved."
+      );
+    }
 
     const updated = await prisma.clinic.update({
       where: { id: targetId },

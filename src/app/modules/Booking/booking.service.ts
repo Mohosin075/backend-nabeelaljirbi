@@ -72,6 +72,13 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
     throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
   }
 
+  if (!clinic.adminVerified) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "Clinic is not approved by admin and cannot accept appointments"
+    );
+  }
+
   if (clinic.user?.banned || (clinic.user as any)?.status === "SUSPENDED") {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
@@ -94,6 +101,13 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
 
   if (!doctor) {
     throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
+  }
+
+  if (!doctor.adminVerified) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      "Doctor is not approved by admin and cannot accept appointments"
+    );
   }
 
   if (doctor.user?.banned || (doctor.user as any)?.status === "SUSPENDED") {

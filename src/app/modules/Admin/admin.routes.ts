@@ -20,6 +20,12 @@ router.patch(
   AdminController.AdminClinicVerified
 );
 router.patch(
+  "/doctor-verified/:doctorId",
+  auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
+  AdminController.AdminDoctorVerified
+);
+router.patch(
   "/clinic-visibility/:clinicId",
   auth(UserRole.ADMIN),
   adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS),
