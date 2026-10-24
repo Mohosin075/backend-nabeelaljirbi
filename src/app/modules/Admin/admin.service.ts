@@ -31,7 +31,7 @@ const AdminStats = async () => {
   ] = await Promise.all([
     prisma.user.count({ where: { role: UserRole.PATIENT } }),
     prisma.user.count({ where: { role: UserRole.DOCTOR } }),
-    prisma.user.count({ where: { role: UserRole.CLINIC } }),
+    prisma.clinic.count(),
     prisma.clinic.count({ where: { verificationStatus: "PENDING" } }),
     prisma.doctor.count({ where: { verificationStatus: "PENDING" } }),
     prisma.settlement.count({ where: { status: "PENDING" } }),
@@ -244,18 +244,48 @@ const getPatients = async (filters: any, options: IPaginationOptions) => {
 };
 
 const updateWallet = async (userId: string, amount: number, currentAdmin?: any) => {
-  const user = await prisma.user.findUnique({
+  let user = await prisma.user.findUnique({
     where: { id: userId }
   });
+
+  if (!user) {
+    const clinic = await prisma.clinic.findFirst({
+      where: {
+        OR: [{ id: userId }, { userId: userId }]
+      },
+      select: { userId: true },
+    });
+    if (clinic) {
+      user = await prisma.user.findUnique({
+        where: { id: clinic.userId }
+      });
+    }
+  }
+
+  if (!user) {
+    const doctor = await prisma.doctor.findFirst({
+      where: {
+        OR: [{ id: userId }, { userId: userId }]
+      },
+      select: { userId: true },
+    });
+    if (doctor) {
+      user = await prisma.user.findUnique({
+        where: { id: doctor.userId }
+      });
+    }
+  }
 
   if (!user) {
     throw new ApiError(httpStatus.NOT_FOUND, 'User not found');
   }
 
+  const effectiveUserId = user.id;
+
   const result = await prisma.$transaction(async (tx) => {
     // Update user's wallet
     await tx.user.update({
-      where: { id: userId },
+      where: { id: effectiveUserId },
       data: {
         wallet: {
           increment: amount
@@ -266,7 +296,7 @@ const updateWallet = async (userId: string, amount: number, currentAdmin?: any) 
     // Create top-up transaction record
     return await tx.topUp.create({
       data: {
-        userId: userId,
+        userId: effectiveUserId,
         amount: amount,
         type: TopUpType.RECHARGE,
       }
@@ -279,9 +309,9 @@ const updateWallet = async (userId: string, amount: number, currentAdmin?: any) 
     adminTier: currentAdmin?.adminTier,
     action: amount >= 0 ? "WALLET_TOP_UP" : "WALLET_DEDUCT",
     targetType: "WALLET",
-    targetId: userId,
+    targetId: effectiveUserId,
     details: {
-      userId,
+      userId: effectiveUserId,
       amount,
       userRole: user.role,
       userFullName: user.fullName || user.phoneNumber,
@@ -295,14 +325,12 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
   const { limit, page, skip, sortBy, sortOrder } = paginationHelpers.calculatePagination(options);
   let { searchTerm, adminVerified } = filters;
 
-  const andConditions: Prisma.UserWhereInput[] = [
+  const andConditions: Prisma.ClinicWhereInput[] = [
     {
-      OR: [
-        { role: UserRole.CLINIC },
-        { clinic: { isNot: null } }
-      ]
-    },
-    { status: { not: UserStatus.DELETED } }
+      user: {
+        status: { not: UserStatus.DELETED }
+      }
+    }
   ];
 
   // Trim searchTerm to remove leading/trailing whitespace
@@ -310,96 +338,86 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
     searchTerm = searchTerm.trim();
   }
 
-  // console.log("searchTerm:", searchTerm);
-
   if (searchTerm) {
     andConditions.push({
       OR: [
-        { fullName: { contains: searchTerm, mode: "insensitive" } },
-        { email: { contains: searchTerm, mode: "insensitive" } },
-        { phoneNumber: { contains: searchTerm, mode: "insensitive" } },
-        { city: { contains: searchTerm, mode: "insensitive" } },
-        { country: { contains: searchTerm, mode: "insensitive" } },
-        { address: { contains: searchTerm, mode: "insensitive" } },
-        { gender: { contains: searchTerm, mode: "insensitive" } },
-        { clinic: { clinicName: { contains: searchTerm, mode: "insensitive" } } },
-        { clinic: { managerName: { contains: searchTerm, mode: "insensitive" } } },
-        { clinic: { managerPhone: { contains: searchTerm, mode: "insensitive" } } },
-        { clinic: { about: { contains: searchTerm, mode: "insensitive" } } },
-        { clinic: { location: { contains: searchTerm, mode: "insensitive" } } },
-        { clinic: { contactPhone: { contains: searchTerm, mode: "insensitive" } } }
+        { clinicName: { contains: searchTerm, mode: "insensitive" } },
+        { managerName: { contains: searchTerm, mode: "insensitive" } },
+        { managerPhone: { contains: searchTerm, mode: "insensitive" } },
+        { about: { contains: searchTerm, mode: "insensitive" } },
+        { location: { contains: searchTerm, mode: "insensitive" } },
+        { contactPhone: { contains: searchTerm, mode: "insensitive" } },
+        {
+          user: {
+            OR: [
+              { fullName: { contains: searchTerm, mode: "insensitive" } },
+              { email: { contains: searchTerm, mode: "insensitive" } },
+              { phoneNumber: { contains: searchTerm, mode: "insensitive" } },
+              { city: { contains: searchTerm, mode: "insensitive" } },
+              { country: { contains: searchTerm, mode: "insensitive" } },
+              { address: { contains: searchTerm, mode: "insensitive" } },
+            ]
+          }
+        }
       ]
     });
   }
 
   if (adminVerified !== undefined) {
     andConditions.push({
-      clinic: {
-        adminVerified: adminVerified === 'true'
-      }
-    })
+      adminVerified: adminVerified === 'true'
+    });
   }
 
-  const whereConditions: Prisma.UserWhereInput = andConditions.length > 0 ? { AND: andConditions } : {};
+  const whereConditions: Prisma.ClinicWhereInput = andConditions.length > 0 ? { AND: andConditions } : {};
 
-  const result = await prisma.user.findMany({
+  const result = await prisma.clinic.findMany({
     where: whereConditions,
     skip,
     take: limit,
     orderBy: sortBy && sortOrder ? { [sortBy]: sortOrder } : { createdAt: 'desc' },
-    select: {
-      id: true,
-      country: true,
-      city: true,
-      address: true,
-      email: true,
-      phoneNumber: true,
-      serviceFree: true,
-      wallet: true,
-      status: true,
-      banned: true,
-      clinic: {
+    include: {
+      user: {
         select: {
           id: true,
-          managerName: true,
-          managerPhone: true,
-          logo: true,
-          clinicName: true,
-          about: true,
-          contactPhone: true,
-          adminVerified: true,
-          badgeActive: true,
-          isVisible: true,
-          trial: true
+          country: true,
+          city: true,
+          address: true,
+          email: true,
+          phoneNumber: true,
+          serviceFree: true,
+          wallet: true,
+          status: true,
+          banned: true,
         }
       }
     }
   });
 
-  const total = await prisma.user.count({ where: whereConditions });
+  const total = await prisma.clinic.count({ where: whereConditions });
 
-  const processedData = result.map(user => ({
-    id: user.id,
-    clinicId: user.clinic?.id,
-    country: user.country,
-    city: user.city,
-    address: user.address,
-    email: user.email,
-    phoneNumber: user.phoneNumber,
-    managerName: user.clinic?.managerName,
-    managerPhone: user.clinic?.managerPhone,
-    logo: user.clinic?.logo,
-    clinicName: user.clinic?.clinicName,
-    about: user.clinic?.about,
-    contactPhone: user.clinic?.contactPhone,
-    adminVerified: user.clinic?.adminVerified,
-    badgeActive: user.clinic?.badgeActive || false,
-    isVisible: user.clinic?.isVisible !== false,
-    serviceFree: user.serviceFree,
-    trial: user.clinic?.trial,
-    wallet: user.wallet,
-    status: user.status,
-    banned: user.banned,
+  const processedData = result.map(clinic => ({
+    id: clinic.user?.id || clinic.userId || clinic.id,
+    clinicId: clinic.id,
+    country: clinic.user?.country || null,
+    city: clinic.user?.city || null,
+    address: clinic.user?.address || clinic.location || null,
+    email: clinic.user?.email || null,
+    phoneNumber: clinic.user?.phoneNumber || clinic.contactPhone || clinic.managerPhone || '',
+    managerName: clinic.managerName,
+    managerPhone: clinic.managerPhone,
+    logo: clinic.logo,
+    clinicName: clinic.clinicName,
+    about: clinic.about,
+    contactPhone: clinic.contactPhone,
+    adminVerified: clinic.adminVerified,
+    badgeActive: clinic.badgeActive || false,
+    isVisible: clinic.isVisible !== false,
+    serviceFree: clinic.user?.serviceFree,
+    trial: clinic.trial,
+    wallet: clinic.user?.wallet ?? 0,
+    status: clinic.user?.status,
+    banned: clinic.user?.banned,
   }));
 
   return {
@@ -1468,7 +1486,7 @@ const getPlatformFinancialOverview = async () => {
     prisma.user.count(),
     prisma.user.count({ where: { role: UserRole.PATIENT } }),
     prisma.user.count({ where: { role: UserRole.DOCTOR } }),
-    prisma.user.count({ where: { role: UserRole.CLINIC } }),
+    prisma.clinic.count(),
     prisma.user.aggregate({
       _sum: {
         wallet: true,

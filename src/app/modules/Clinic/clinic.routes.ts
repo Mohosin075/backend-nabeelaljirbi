@@ -27,7 +27,7 @@ const galleryUpload = s3Uploader.fields([
 
 router.patch(
   "/update-info",
-  auth(UserRole.CLINIC),
+  auth(),
   fileUpload,
   ClinicController.updateClinicProfile
 );

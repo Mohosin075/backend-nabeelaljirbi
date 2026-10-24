@@ -43,10 +43,20 @@ async function sendClinicNotification(
   description: string
 ) {
   try {
-    const user = await prisma.user.findUnique({
+    let user = await prisma.user.findUnique({
       where: { id: userId },
       include: { clinic: true }
     });
+
+    if (!user) {
+      const clinic = await prisma.clinic.findUnique({
+        where: { id: userId },
+        include: { user: { include: { clinic: true } } }
+      });
+      if (clinic) {
+        user = clinic.user;
+      }
+    }
 
     if (!user || !user.clinic) {
       console.log(`⚠️ Clinic ${userId} not found, skipping notification`);

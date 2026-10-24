@@ -117,7 +117,7 @@ const updateClinicProfile = async (userId: string, payload: any) => {
   // 1️⃣ Check if user exists
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new ApiError(httpStatus.NOT_FOUND, "User not found");
-  if (user.role !== UserRole.CLINIC) {
+  if (user.role && user.role !== UserRole.CLINIC && user.role !== UserRole.MANAGER) {
     throw new ApiError(httpStatus.FORBIDDEN, "Only the clinic administrator can update clinic settings");
   }
 
