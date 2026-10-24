@@ -12,6 +12,7 @@ import { broadcastBookingUpdate } from '../../../helpars/socket/socketHandler';
 
 import admin from '../../../helpars/firebase/firebase';
 import { NotificationTemplateService } from '../../modules/NotificationTemplate/notificationTemplate.service';
+import { Notification } from '../../modules/Notification/notification.service';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Booking Notification Worker (existing — 24h / 3h reminders)
@@ -212,6 +213,11 @@ export const appointmentLifecycleWorker = new Worker<
 
       const appointment = await prisma.bookingAppointment.findUnique({
         where: { id: appointmentId },
+        include: {
+          patient: { include: { user: true } },
+          clinic: { include: { user: true } },
+          doctor: { include: { user: true } },
+        },
       });
 
       if (!appointment) {
@@ -229,6 +235,24 @@ export const appointmentLifecycleWorker = new Worker<
 
       console.log(
         `🚨 [PENDING_TIMEOUT] Clinic ignored booking ${appointmentId} — marking NOT_UPDATED, refunding patient, and penalizing clinic`
+      );
+
+      const userLang: "ar" | "en" =
+        (appointment.patient?.user as any)?.language === "en" ? "en" : "ar";
+      const isEn = userLang === "en";
+
+      const rendered = await NotificationTemplateService.renderNotification(
+        "BOOKING_REJECTED",
+        userLang,
+        {
+          doctorName:
+            appointment.doctor?.user?.fullName || (isEn ? "Doctor" : "الطبيب"),
+          clinicName:
+            appointment.clinic?.clinicName || (isEn ? "Clinic" : "العيادة"),
+          reason: isEn ? "Clinic did not respond before deadline" : "لم تستجب العيادة قبل انتهاء المهلة المحددة",
+          patientName:
+            appointment.patient?.user?.fullName || (isEn ? "Patient" : "المريض"),
+        }
       );
 
       const didAutoReject = await prisma.$transaction(async (tx) => {
@@ -349,10 +373,8 @@ export const appointmentLifecycleWorker = new Worker<
             patientId,
             bookingAppointmentId: appointmentId,
             notificationType: 'APPOINTMENT_REJECTED',
-            title: 'Booking Auto-Rejected',
-            description:
-              'Your appointment request was not accepted by the clinic before the deadline. ' +
-              'Your service fee hold has been unreleased / refunded in full.',
+            title: rendered.title,
+            description: rendered.body,
           },
         });
 
@@ -367,8 +389,10 @@ export const appointmentLifecycleWorker = new Worker<
               clinicId: clinic.id,
               bookingAppointmentId: appointmentId,
               notificationType: 'APPOINTMENT_REJECTED',
-              title: 'Booking Ignored Penalty',
-              description: `You missed a booking request before the deadline. A penalty of ${clinicPenalty} has been deducted from your wallet.`,
+              title: isEn ? 'Booking Ignored Penalty' : 'غرامة تجاهل الحجز',
+              description: isEn
+                ? `You missed a booking request before the deadline. A penalty of ${clinicPenalty} has been deducted from your wallet.`
+                : `لقد فاتتك الاستجابة لطلب الحجز قبل الموعد النهائي. تم خصم غرامة قدرها ${clinicPenalty} من محفظتك.`,
             },
           });
         }
@@ -378,6 +402,25 @@ export const appointmentLifecycleWorker = new Worker<
 
       if (!didAutoReject) {
         return { status: 'skipped', reason: 'booking_handled_concurrently' };
+      }
+
+      // FCM push notification to patient
+      if (rendered.pushEnabled && appointment.patient?.user?.fcmToken) {
+        try {
+          await Notification.PatientNotification(
+            appointment.id,
+            patientId,
+            'APPOINTMENT_REJECTED',
+            rendered.title,
+            rendered.body,
+            appointment.patient.user.fcmToken,
+            userLang,
+            {},
+            { skipDb: true }
+          );
+        } catch (fcmErr) {
+          console.error('FCM error on pending timeout:', fcmErr);
+        }
       }
 
       try {
@@ -416,6 +459,11 @@ export const appointmentLifecycleWorker = new Worker<
 
       const appointment = await prisma.bookingAppointment.findUnique({
         where: { id: appointmentId },
+        include: {
+          patient: { include: { user: true } },
+          clinic: { include: { user: true } },
+          doctor: { include: { user: true } },
+        },
       });
 
       if (!appointment) {
@@ -455,13 +503,27 @@ export const appointmentLifecycleWorker = new Worker<
         `auto-settling as Neglected. Service fee stays with platform; refunding consultation amount if collected.`
       );
 
-      const patient = await prisma.patient.findUnique({
-        where: { id: patientId },
-        select: { userId: true },
-      });
-
+      const patient = appointment.patient;
       const consultFee = appointment.consultFee || 0;
       const isModeB = appointment.collectionMode === "MODE_B";
+
+      const userLang: "ar" | "en" =
+        (appointment.patient?.user as any)?.language === "en" ? "en" : "ar";
+      const isEn = userLang === "en";
+
+      const notifTitle = isEn ? "Appointment Auto-Settled" : "تسوية تلقائية للموعد";
+      const notifDesc = isEn
+        ? (isModeB && consultFee > 0
+            ? `Your appointment was unresolved after the period end. The consultation amount of ${consultFee} LYD has been refunded to your wallet. The service fee captured at confirmation is non-refundable.`
+            : 'Your appointment was marked as unresolved after the scheduled period. The service fee captured at confirmation is non-refundable.')
+        : (isModeB && consultFee > 0
+            ? `لم تتم معالجة موعدك بعد انتهاء الفترة. تم استرداد مبلغ الاستشارة وقدره ${consultFee} دينار ليبي إلى محفظتك. رسوم الخدمة غير قابلة للاسترداد.`
+            : 'تم تصنيف موعدك بأنه غير مكتمل بعد انتهاء الفترة. رسوم الخدمة غير قابلة للاسترداد.');
+
+      const clinicNotifTitle = isEn ? "Appointment Neglected & Auto-Closed" : "إغلاق تلقائي لموعد لم يتم حضوره";
+      const clinicNotifDesc = isEn
+        ? `Appointment ${appointmentId} auto-settled after period end without recorded arrival. Service fee of ${clinicServiceFee} was retained by platform.`
+        : `تمت التسوية التلقائية للموعد ${appointmentId} بعد انتهاء الفترة لعدم تسجيل الوصول. تم الاحتفاظ برسوم الخدمة وقدرها ${clinicServiceFee} للمنصة.`;
 
       const didAutoSettle = await prisma.$transaction(async (tx) => {
         // A manual completion/cancellation must not race and receive a second settlement.
@@ -498,11 +560,8 @@ export const appointmentLifecycleWorker = new Worker<
             patientId,
             bookingAppointmentId: appointmentId,
             notificationType: 'APPOINTMENT_AUTO_CLOSED',
-            title: 'Appointment Auto-Settled',
-            description:
-              isModeB && consultFee > 0
-                ? `Your appointment was unresolved after the period end. The consultation amount of ${consultFee} LYD has been refunded to your wallet. The service fee captured at confirmation is non-refundable.`
-                : 'Your appointment was marked as unresolved after the scheduled period. The service fee captured at confirmation is non-refundable.',
+            title: notifTitle,
+            description: notifDesc,
           },
         });
 
@@ -512,9 +571,8 @@ export const appointmentLifecycleWorker = new Worker<
             clinicId,
             bookingAppointmentId: appointmentId,
             notificationType: 'APPOINTMENT_AUTO_CLOSED',
-            title: 'Appointment Neglected & Auto-Closed',
-            description:
-              `Appointment ${appointmentId} auto-settled after period end without recorded arrival. Service fee of ${clinicServiceFee} was retained by platform.`,
+            title: clinicNotifTitle,
+            description: clinicNotifDesc,
           },
         });
 
@@ -541,6 +599,25 @@ export const appointmentLifecycleWorker = new Worker<
           throw new Error(`Could not claim confirmed timeout for ${appointmentId}`);
         }
         return { status: 'skipped', reason: 'booking_handled_concurrently' };
+      }
+
+      // FCM push notification to patient
+      if (appointment.patient?.user?.fcmToken) {
+        try {
+          await Notification.PatientNotification(
+            appointment.id,
+            patientId,
+            'APPOINTMENT_AUTO_CLOSED',
+            notifTitle,
+            notifDesc,
+            appointment.patient.user.fcmToken,
+            userLang,
+            {},
+            { skipDb: true }
+          );
+        } catch (fcmErr) {
+          console.error('FCM error on confirmed timeout:', fcmErr);
+        }
       }
 
       try {

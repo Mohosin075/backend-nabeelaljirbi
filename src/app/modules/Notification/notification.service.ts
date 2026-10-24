@@ -94,19 +94,22 @@ const ClinicNotification = async (
   notificationType: string,
   title?: string,
   description?: string,
-  fcmToken?: string
+  fcmToken?: string,
+  options?: { skipDb?: boolean }
 ) => {
   console.log("Sending clinic notification...");
 
-  await prisma.clinicNotification.create({
-    data: {
-      clinicId,
-      notificationType,
-      bookingAppointmentId: appointmentId || undefined,
-      title,
-      description,
-    },
-  });
+  if (!options?.skipDb) {
+    await prisma.clinicNotification.create({
+      data: {
+        clinicId,
+        notificationType,
+        bookingAppointmentId: appointmentId || undefined,
+        title,
+        description,
+      },
+    });
+  }
 
   if (!fcmToken) {
     console.log("FCM token is null");
@@ -134,7 +137,7 @@ const ClinicNotification = async (
           sound: "notification_sound.aiff",
           alert: {
             title: title || `${notificationType}`,
-            body: description || `${notificationType}`,
+            body: description || "",
           },
           category: "CALL_CATEGORY",
         },
@@ -167,7 +170,8 @@ const PatientNotification = async (
   description?: string,
   fcmToken?: string,
   lang: "ar" | "en" = "ar",
-  variables: Record<string, any> = {}
+  variables: Record<string, any> = {},
+  options?: { skipDb?: boolean }
 ) => {
   console.log('Sending patient notification...', patientId);
 
@@ -184,15 +188,17 @@ const PatientNotification = async (
     if (!finalDescription && rendered.body) finalDescription = rendered.body;
   }
 
-  await prisma.patientNotification.create({
-    data: {
-      patientId,
-      notificationType,
-      bookingAppointmentId: appointmentId || undefined,
-      title: finalTitle,
-      description: finalDescription,
-    },
-  });
+  if (!options?.skipDb) {
+    await prisma.patientNotification.create({
+      data: {
+        patientId,
+        notificationType,
+        bookingAppointmentId: appointmentId || undefined,
+        title: finalTitle,
+        description: finalDescription,
+      },
+    });
+  }
 
   if (!fcmToken) {
     const patient = await prisma.patient.findUnique({
@@ -209,8 +215,8 @@ const PatientNotification = async (
 
   const message: any = {
     notification: {
-      title: title || `${notificationType}`,
-      body: description || '',
+      title: finalTitle || `${notificationType}`,
+      body: finalDescription || '',
     },
     data: {
       notificationType,
@@ -227,8 +233,8 @@ const PatientNotification = async (
         aps: {
           sound: 'notification_sound.aiff',
           alert: {
-            title: title || `${notificationType}`,
-            body: description || `${notificationType}`,
+            title: finalTitle || `${notificationType}`,
+            body: finalDescription || '',
           },
           category: 'CALL_CATEGORY',
         },

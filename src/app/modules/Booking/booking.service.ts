@@ -494,21 +494,43 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
     });
 
     // Patient notification: Request Sent (Pending Clinic Approval)
+    const userLang: "ar" | "en" =
+      (user as any)?.language === "en" ? "en" : "ar";
+    const isEn = userLang === "en";
+
+    const rendered = await NotificationTemplateService.renderNotification(
+      "BOOKING_REQUEST_SENT",
+      userLang,
+      {
+        doctorName: doctor.user?.fullName || (isEn ? "Doctor" : "الطبيب"),
+        clinicName: clinic.clinicName || (isEn ? "Clinic" : "العيادة"),
+        date: new Date(dayStart).toISOString().split("T")[0],
+        patientName: user.fullName || (isEn ? "Patient" : "المريض"),
+      }
+    );
+
     await tx.patientNotification.create({
       data: {
         patientId: user.patient!.id,
         bookingAppointmentId: createdBooking.id,
         notificationType: "APPOINTMENT_REQUEST_SENT",
-        title: "Booking Request Sent",
-        description: `Your appointment request for ${new Date(
-          dayStart
-        ).toLocaleDateString()} with Dr. ${
-          doctor.user?.fullName || "Doctor"
-        } at ${
-          clinic.clinicName || "Clinic"
-        } has been sent and is awaiting clinic approval.`,
+        title: rendered.title,
+        description: rendered.body,
       },
     });
+
+    const clinicTitle = isEn ? "New Booking Request" : "طلب حجز جديد";
+    const clinicDesc = isEn
+      ? `New appointment request received for Dr. ${
+          doctor.user?.fullName || "Doctor"
+        } on ${new Date(dayStart).toLocaleDateString()} (${
+          workingSlot.startTime
+        } - ${workingSlot.endTime}). Please review before period starts.`
+      : `تم استلام طلب حجز جديد لموعد مع د. ${
+          doctor.user?.fullName || "الطبيب"
+        } بتاريخ ${new Date(dayStart).toLocaleDateString()} (${
+          workingSlot.startTime
+        } - ${workingSlot.endTime}). يرجى المراجعة قبل بدء الفترة.`;
 
     // Clinic notification: New Pending Request
     await tx.clinicNotification.create({
@@ -516,16 +538,12 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
         clinicId: clinic.id,
         bookingAppointmentId: createdBooking.id,
         notificationType: "NEW_BOOKING_REQUEST",
-        title: "New Booking Request",
-        description: `New appointment request received for Dr. ${
-          doctor.user?.fullName || "Doctor"
-        } on ${new Date(dayStart).toLocaleDateString()} (${
-          workingSlot.startTime
-        } - ${workingSlot.endTime}). Please review before period starts.`,
+        title: clinicTitle,
+        description: clinicDesc,
       },
     });
 
-      return createdBooking;
+      return { createdBooking, rendered, userLang, clinicTitle, clinicDesc };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
@@ -537,6 +555,8 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
     throw error;
   }
 
+  const { createdBooking, rendered, userLang, clinicTitle, clinicDesc } = booking;
+
   // 10. Schedule pending timeout: Period start time is the clinic response deadline
   try {
     const adminUser = await prisma.user.findUnique({
@@ -545,13 +565,13 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
 
     if (adminUser) {
       await BookingSchedulerService.schedulePendingBookingTimeout({
-        appointmentId: booking.id,
+        appointmentId: createdBooking.id,
         patientId: user.patient.id,
         patientUserId: user.id,
         clinicUserId: clinic.userId,
         adminUserId: adminUser.id,
-        patientServiceFee: booking.patientServiceFee,
-        consultDate: booking.consultDate,
+        patientServiceFee: createdBooking.patientServiceFee,
+        consultDate: createdBooking.consultDate,
         deadlineTime: workingSlot.startTime,
       });
     }
@@ -559,7 +579,38 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
     console.error("Failed to schedule pending timeout job:", scheduleError);
   }
 
-  return booking;
+  // Send push notifications
+  try {
+    if (rendered.pushEnabled && user.fcmToken) {
+      await Notification.PatientNotification(
+        createdBooking.id,
+        user.patient.id,
+        "APPOINTMENT_REQUEST_SENT",
+        rendered.title,
+        rendered.body,
+        user.fcmToken,
+        userLang,
+        {},
+        { skipDb: true }
+      );
+    }
+
+    if (clinic.user?.fcmToken) {
+      await Notification.ClinicNotification(
+        createdBooking.id,
+        clinic.id,
+        "NEW_BOOKING_REQUEST",
+        clinicTitle,
+        clinicDesc,
+        clinic.user.fcmToken,
+        { skipDb: true }
+      );
+    }
+  } catch (pushErr) {
+    console.error("Error sending booking request push notifications:", pushErr);
+  }
+
+  return createdBooking;
 };
 
 /**
@@ -614,7 +665,7 @@ const confirmBooking = async (
   const collectionMode = appointment.collectionMode || "MODE_A";
 
   // Execute confirmation transaction: Convert hold into actual charge
-  const updatedBooking = await prisma.$transaction(async (tx) => {
+  const updatedBookingResult = await prisma.$transaction(async (tx) => {
     // 1. Unfreeze hold and deduct from patient wallet
     if (holdAmount > 0) {
       await tx.user.update({
@@ -729,27 +780,48 @@ const confirmBooking = async (
       where: { id: appointmentId },
     });
 
+    const userLang: "ar" | "en" =
+      (appointment.patient?.user as any)?.language === "en" ? "en" : "ar";
+    const isEn = userLang === "en";
+
+    const rendered = await NotificationTemplateService.renderNotification(
+      "BOOKING_CONFIRMED",
+      userLang,
+      {
+        doctorName:
+          appointment.doctor.user?.fullName || (isEn ? "Doctor" : "الطبيب"),
+        clinicName:
+          appointment.clinic?.clinicName || (isEn ? "Clinic" : "العيادة"),
+        clinicAddress:
+          appointment.clinic?.location ||
+          appointment.clinic?.user?.address ||
+          "",
+        queueNumber: appointment.serialNumber,
+        estimatedTime:
+          appointment.approximateEstimatedTime ||
+          appointment.startTime ||
+          "",
+        date: new Date(appointment.consultDate).toISOString().split("T")[0],
+        patientName:
+          appointment.patient.user?.fullName || (isEn ? "Patient" : "المريض"),
+      }
+    );
+
     // 7. Patient notification with queue position and estimated time
     await tx.patientNotification.create({
       data: {
         patientId: appointment.patientId,
         bookingAppointmentId: appointment.id,
         notificationType: "APPOINTMENT_CONFIRMED",
-        title: "Appointment Confirmed",
-        description: `Your appointment with Dr. ${
-          appointment.doctor.user?.fullName || "Doctor"
-        } on ${new Date(appointment.consultDate).toLocaleDateString()} (${
-          appointment.startTime
-        } - ${
-          appointment.endTime
-        }) is Confirmed. Queue #${appointment.serialNumber}. Approx time: ${
-          appointment.approximateEstimatedTime || appointment.startTime
-        } (Estimate).`,
+        title: rendered.title,
+        description: rendered.body,
       },
     });
 
-    return confirmed;
+    return { confirmed, rendered, userLang };
   });
+
+  const { confirmed: updatedBooking, rendered, userLang } = updatedBookingResult;
 
   // Cancel pending timeout job
   try {
@@ -800,33 +872,6 @@ const confirmBooking = async (
 
   // FCM Push notification to patient using NotificationTemplate
   try {
-    const userLang: "ar" | "en" =
-      (appointment.patient?.user as any)?.language === "en" ? "en" : "ar";
-    const isEn = userLang === "en";
-
-    const rendered = await NotificationTemplateService.renderNotification(
-      "BOOKING_CONFIRMED",
-      userLang,
-      {
-        doctorName:
-          appointment.doctor.user?.fullName || (isEn ? "Doctor" : "الطبيب"),
-        clinicName:
-          appointment.clinic?.clinicName || (isEn ? "Clinic" : "العيادة"),
-        clinicAddress:
-          appointment.clinic?.location ||
-          appointment.clinic?.user?.address ||
-          "",
-        queueNumber: updatedBooking.serialNumber,
-        estimatedTime:
-          updatedBooking.approximateEstimatedTime ||
-          updatedBooking.startTime ||
-          "",
-        date: new Date(updatedBooking.consultDate).toISOString().split("T")[0],
-        patientName:
-          appointment.patient.user?.fullName || (isEn ? "Patient" : "المريض"),
-      }
-    );
-
     if (rendered.pushEnabled && appointment.patient.user?.fcmToken) {
       await Notification.PatientNotification(
         updatedBooking.id,
@@ -834,7 +879,10 @@ const confirmBooking = async (
         "APPOINTMENT_CONFIRMED",
         rendered.title,
         rendered.body,
-        appointment.patient.user.fcmToken
+        appointment.patient.user.fcmToken,
+        userLang,
+        {},
+        { skipDb: true }
       );
     }
   } catch (fcmErr) {
@@ -944,6 +992,38 @@ const rejectBooking = async (
       : "Clinic rejected booking request";
   const reasonText = reason?.trim() || defaultReason;
 
+  const userLang: "ar" | "en" =
+    (appointment.patient?.user as any)?.language === "en" ? "en" : "ar";
+  const isEn = userLang === "en";
+
+  const eventKey =
+    cancelledBy === "PATIENT" ? "BOOKING_CANCELLED" : "BOOKING_REJECTED";
+  const notifType =
+    cancelledBy === "PATIENT"
+      ? "APPOINTMENT_CANCELLED"
+      : "APPOINTMENT_REJECTED";
+
+  const refundNotice = isEn
+    ? `Any frozen amount of ${holdAmount} LYD has been completely released back to your wallet.`
+    : `تم تحرير المبلغ المحجوز وقدره ${holdAmount} دينار ليبي بالكامل وإعادته إلى محفظتك.`;
+
+  const rendered = await NotificationTemplateService.renderNotification(
+    eventKey,
+    userLang,
+    {
+      doctorName:
+        appointment.doctor?.user?.fullName || (isEn ? "Doctor" : "الطبيب"),
+      clinicName:
+        appointment.clinic?.clinicName || (isEn ? "Clinic" : "العيادة"),
+      date: new Date(appointment.consultDate).toISOString().split("T")[0],
+      refundNotice,
+      cancelledBy,
+      reason: reasonText,
+      patientName:
+        appointment.patient?.user?.fullName || (isEn ? "Patient" : "المريض"),
+    }
+  );
+
   // Execute rejection transaction: Unfreeze full hold amount
   const rejectedBooking = await prisma.$transaction(async (tx) => {
     // Unfreeze the patient's wallet hold (money was never deducted, unfreezing restores balance)
@@ -985,30 +1065,13 @@ const rejectBooking = async (
     });
 
     // Notify patient
-    const notifType =
-      cancelledBy === "PATIENT"
-        ? "APPOINTMENT_CANCELLED"
-        : "APPOINTMENT_REJECTED";
-    const notifTitle =
-      cancelledBy === "PATIENT"
-        ? "Booking Request Cancelled"
-        : "Booking Request Rejected";
-    const notifDesc =
-      cancelledBy === "PATIENT"
-        ? `Your appointment request for ${new Date(
-            appointment.consultDate
-          ).toLocaleDateString()} has been cancelled. Any frozen amount of ${holdAmount} LYD has been completely released back to your wallet.`
-        : `Your appointment request for ${new Date(
-            appointment.consultDate
-          ).toLocaleDateString()} was not accepted. Reason: ${reasonText}. Any frozen amount of ${holdAmount} LYD has been completely released back to your wallet.`;
-
     await tx.patientNotification.create({
       data: {
         patientId: appointment.patientId,
         bookingAppointmentId: appointment.id,
         notificationType: notifType,
-        title: notifTitle,
-        description: notifDesc,
+        title: rendered.title,
+        description: rendered.body,
       },
     });
 
@@ -1043,32 +1106,17 @@ const rejectBooking = async (
 
   // FCM Push notification to patient using NotificationTemplate
   try {
-    const userLang: "ar" | "en" =
-      (appointment.patient?.user as any)?.language === "en" ? "en" : "ar";
-    const isEn = userLang === "en";
-
-    const rendered = await NotificationTemplateService.renderNotification(
-      "BOOKING_REJECTED",
-      userLang,
-      {
-        doctorName:
-          appointment.doctor.user?.fullName || (isEn ? "Doctor" : "الطبيب"),
-        clinicName:
-          appointment.clinic?.clinicName || (isEn ? "Clinic" : "العيادة"),
-        reason: reasonText,
-        patientName:
-          appointment.patient.user?.fullName || (isEn ? "Patient" : "المريض"),
-      }
-    );
-
-    if (rendered.pushEnabled && appointment.patient.user?.fcmToken) {
+    if (rendered.pushEnabled && appointment.patient?.user?.fcmToken) {
       await Notification.PatientNotification(
         rejectedBooking.id,
         rejectedBooking.patientId,
-        "APPOINTMENT_REJECTED",
+        notifType,
         rendered.title,
         rendered.body,
-        appointment.patient.user.fcmToken
+        appointment.patient.user.fcmToken,
+        userLang,
+        {},
+        { skipDb: true }
       );
     }
   } catch (fcmErr) {
@@ -1318,6 +1366,35 @@ const cancelBooking = async (
     const cancelReasonText =
       reason?.trim() || `Cancelled by ${cancelledBy.toLowerCase()}`;
 
+    const userLang: "ar" | "en" =
+      (booking.patient?.user as any)?.language === "en" ? "en" : "ar";
+    const isEn = userLang === "en";
+
+    const refundNotice = isEn
+      ? totalRefundToPatient > 0
+        ? `A consultation refund of ${totalRefundToPatient} LYD has been credited to your wallet. The captured service fee is non-refundable.`
+        : "The service fee was captured when the booking was confirmed and is non-refundable."
+      : totalRefundToPatient > 0
+        ? `تم إيداع مبلغ استرداد الاستشارة بقيمة ${totalRefundToPatient} دينار ليبي في محفظتك. رسوم الخدمة غير قابلة للاسترداد.`
+        : "تم تحصيل رسوم الخدمة عند تأكيد الحجز وهي غير قابلة للاسترداد.";
+
+    const rendered = await NotificationTemplateService.renderNotification(
+      "BOOKING_CANCELLED",
+      userLang,
+      {
+        doctorName:
+          booking.doctor?.user?.fullName || (isEn ? "Doctor" : "الطبيب"),
+        clinicName:
+          booking.clinic?.clinicName || (isEn ? "Clinic" : "العيادة"),
+        date: new Date(booking.consultDate).toISOString().split("T")[0],
+        refundNotice,
+        cancelledBy,
+        reason: cancelReasonText,
+        patientName:
+          booking.patient?.user?.fullName || (isEn ? "Patient" : "المريض"),
+      }
+    );
+
     const updatedBooking = await prisma.$transaction(async (tx) => {
       // Step A: In Mode B, reclaim consultation fee from clinic wallet
       if (refundConsultFee > 0 && clinicUserId) {
@@ -1375,38 +1452,39 @@ const cancelBooking = async (
         where: { id: appointmentId },
       });
 
-      // Step F: Explain consultation refund and retained service fee clearly.
-      const refundMsg = totalRefundToPatient > 0
-        ? `A consultation refund of ${totalRefundToPatient} LYD has been credited to your wallet. The captured service fee is non-refundable.`
-        : "The service fee was captured when the booking was confirmed and is non-refundable.";
-
+      // Step F: In-app patient notification
       await tx.patientNotification.create({
         data: {
           patientId: booking.patientId,
           bookingAppointmentId: booking.id,
           notificationType: "APPOINTMENT_CANCELLED",
-          title: "Appointment Cancelled",
-          description: `Your appointment with Dr. ${
-            booking.doctor?.user?.fullName || "Doctor"
-          } on ${new Date(
-            booking.consultDate
-          ).toLocaleDateString()} has been cancelled. Reason: ${cancelReasonText}. ${refundMsg}`,
+          title: rendered.title,
+          description: rendered.body,
         },
       });
 
       // Step G: Clinic notification
       if (cancelledBy !== "CLINIC") {
+        const clinicTitle = isEn ? "Appointment Cancelled" : "تم إلغاء الموعد";
+        const clinicDesc = isEn
+          ? `Appointment #${booking.serialNumber} for patient ${
+              booking.patient?.user?.fullName || "Patient"
+            } on ${new Date(
+              booking.consultDate
+            ).toLocaleDateString()} was cancelled. Reason: ${cancelReasonText}.`
+          : `تم إلغاء الموعد #${booking.serialNumber} للمريض ${
+              booking.patient?.user?.fullName || "المريض"
+            } بتاريخ ${new Date(
+              booking.consultDate
+            ).toLocaleDateString()}. السبب: ${cancelReasonText}.`;
+
         await tx.clinicNotification.create({
           data: {
             clinicId: booking.clinicId,
             bookingAppointmentId: booking.id,
             notificationType: "APPOINTMENT_CANCELLED",
-            title: "Appointment Cancelled",
-            description: `Appointment #${booking.serialNumber} for patient ${
-              booking.patient?.user?.fullName || "Patient"
-            } on ${new Date(
-              booking.consultDate
-            ).toLocaleDateString()} was cancelled. Reason: ${cancelReasonText}.`,
+            title: clinicTitle,
+            description: clinicDesc,
           },
         });
       }
@@ -1442,40 +1520,19 @@ const cancelBooking = async (
     }
 
     // Step J: FCM push notification to patient (if cancelled by clinic/doctor/admin)
-    if (cancelledBy !== "PATIENT" && booking.patient?.user?.fcmToken) {
+    if (cancelledBy !== "PATIENT" && booking.patient?.user?.fcmToken && rendered.pushEnabled) {
       try {
-        const userLang: "ar" | "en" =
-          (booking.patient?.user as any)?.language === "en" ? "en" : "ar";
-        const isEn = userLang === "en";
-
-        const rendered = await NotificationTemplateService.renderNotification(
-          "BOOKING_CANCELLED",
+        await Notification.PatientNotification(
+          booking.id,
+          booking.patientId,
+          "APPOINTMENT_CANCELLED",
+          rendered.title,
+          rendered.body,
+          booking.patient.user.fcmToken,
           userLang,
-          {
-            doctorName:
-              booking.doctor?.user?.fullName || (isEn ? "Doctor" : "الطبيب"),
-            clinicName:
-              booking.clinic?.clinicName || (isEn ? "Clinic" : "العيادة"),
-            date: new Date(booking.consultDate).toISOString().split("T")[0],
-            refundNotice: isEn
-              ? `Consultation refund: ${refundConsultFee} LYD. The service fee is non-refundable.`
-              : `المبلغ المسترد للاستشارة: ${refundConsultFee} دينار ليبي. رسوم الخدمة غير قابلة للاسترداد.`,
-            cancelledBy: cancelledBy,
-            patientName:
-              booking.patient?.user?.fullName || (isEn ? "Patient" : "المريض"),
-          }
+          {},
+          { skipDb: true }
         );
-
-        if (rendered.pushEnabled) {
-          await Notification.PatientNotification(
-            booking.id,
-            booking.patientId,
-            "APPOINTMENT_CANCELLED",
-            rendered.title,
-            rendered.body,
-            booking.patient.user.fcmToken
-          );
-        }
       } catch (fcmErr) {
         console.error("FCM error on cancellation:", fcmErr);
       }
@@ -1498,9 +1555,9 @@ const completeBooking = async (
   const existing = await prisma.bookingAppointment.findUnique({
     where: { id: appointmentId },
     include: {
-      patient: { select: { userId: true } },
-      doctor: { select: { userId: true } },
-      clinic: { select: { userId: true } },
+      patient: { include: { user: true } },
+      doctor: { include: { user: true } },
+      clinic: { include: { user: true } },
     },
   });
 
@@ -1542,17 +1599,50 @@ const completeBooking = async (
     console.error("Error cancelling scheduled jobs for completed booking:", schedErr);
   }
 
+  const userLang: "ar" | "en" =
+    (existing.patient?.user as any)?.language === "en" ? "en" : "ar";
+  const isEn = userLang === "en";
+
+  const rendered = await NotificationTemplateService.renderNotification(
+    "BOOKING_COMPLETED",
+    userLang,
+    {
+      doctorName:
+        existing.doctor?.user?.fullName || (isEn ? "Doctor" : "الطبيب"),
+      clinicName:
+        existing.clinic?.clinicName || (isEn ? "Clinic" : "العيادة"),
+      patientName:
+        existing.patient?.user?.fullName || (isEn ? "Patient" : "المريض"),
+    }
+  );
+
   await prisma.patientNotification.create({
     data: {
       patientId: booking.patientId,
       bookingAppointmentId: booking.id,
       notificationType: "APPOINTMENT_COMPLETED",
-      title: "Appointment Completed",
-      description: `Your appointment on ${new Date(
-        booking.consultDate
-      ).toLocaleDateString()} has been completed. Thank you!`,
+      title: rendered.title,
+      description: rendered.body,
     },
   });
+
+  if (rendered.pushEnabled && existing.patient?.user?.fcmToken) {
+    try {
+      await Notification.PatientNotification(
+        booking.id,
+        booking.patientId,
+        "APPOINTMENT_COMPLETED",
+        rendered.title,
+        rendered.body,
+        existing.patient.user.fcmToken,
+        userLang,
+        {},
+        { skipDb: true }
+      );
+    } catch (fcmErr) {
+      console.error("FCM error on completion:", fcmErr);
+    }
+  }
 
   try {
     broadcastBookingUpdate({
