@@ -924,7 +924,7 @@ const handleUnifiedStatusChange = async (
   bookingId: string,
   status: BookingStatus,
   userId: string,
-  role: "CLINIC" | "MANAGER" | "ADMIN",
+  role: "CLINIC" | "MANAGER" | "ADMIN" | "DOCTOR",
   reason?: string,
 ) => {
   const appointment = await prisma.bookingAppointment.findUnique({
@@ -943,6 +943,13 @@ const handleUnifiedStatusChange = async (
   // Authorization check
   if (role === "ADMIN") {
     // Admin has global override permission
+  } else if (role === "DOCTOR") {
+    if (appointment.doctor?.userId !== userId) {
+      throw new ApiError(
+        httpStatus.FORBIDDEN,
+        "You are not authorized to update this appointment"
+      );
+    }
   } else if (role === "CLINIC" && appointment.clinic?.userId !== userId) {
     throw new ApiError(
       httpStatus.FORBIDDEN,
@@ -1095,6 +1102,32 @@ const handleUnifiedStatusChange = async (
         appointment.patient.user.fcmToken,
       );
     }
+    if (appointment.doctor?.user?.fcmToken && role !== "DOCTOR") {
+      try {
+        const docLang: "ar" | "en" =
+          (appointment.doctor.user as any)?.language === "en" ? "en" : "ar";
+        const docIsEn = docLang === "en";
+        const patientName =
+          appointment.patient?.user?.fullName || (docIsEn ? "Patient" : "المريض");
+        await Notification.DoctorNotification(
+          result.id,
+          result.doctorId,
+          "APPOINTMENT_NOT_SHOW",
+          appointment.doctor.user.fcmToken,
+          docLang,
+          {},
+          {
+            title: docIsEn ? "Marked as No Show" : "تسجيل عدم الحضور",
+            body: docIsEn
+              ? `Appointment for ${patientName} on ${result.consultDate} was marked as No Show. Reason: ${noShowReasonText}`
+              : `تم تسجيل موعد ${patientName} بتاريخ ${result.consultDate} كعدم حضور. السبب: ${noShowReasonText}`,
+            skipDb: false,
+          }
+        );
+      } catch (e) {
+        // non-blocking
+      }
+    }
   } else {
     throw new ApiError(httpStatus.BAD_REQUEST, `Unsupported booking status transition to ${status}`);
   }
@@ -1136,8 +1169,8 @@ const updateAppointmentStatus = async (
   userRole?: string,
 ) => {
   const mappedRole =
-    userRole === "MANAGER" || userRole === "ADMIN"
-      ? (userRole as "MANAGER" | "ADMIN")
+    userRole === "MANAGER" || userRole === "ADMIN" || userRole === "DOCTOR"
+      ? (userRole as "MANAGER" | "ADMIN" | "DOCTOR")
       : "CLINIC";
   return handleUnifiedStatusChange(bookingId, status, userId, mappedRole, reason);
 };

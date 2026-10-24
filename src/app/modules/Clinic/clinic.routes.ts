@@ -122,7 +122,7 @@ router.get(
 
 router.patch(
   "/update/appointment-status",
-  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN, UserRole.DOCTOR),
   requireSuperAdminForAdminOverride,
   validateRequest(clinicValidation.updateBookingStatusValidationSchema),
   ClinicController.updateAppointmentStatus

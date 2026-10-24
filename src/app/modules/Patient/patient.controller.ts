@@ -189,11 +189,13 @@ const getPatientBookingSettings = catchAsync(async (_req: Request, res: Response
 const cancelAppointment = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const { bookingId } = req.params;
+  const { reason } = req.body;
 
   const result = await BookingService.cancelBooking(
     bookingId,
     userId!,
-    "PATIENT"
+    "PATIENT",
+    reason
   );
 
   sendResponse(res, {

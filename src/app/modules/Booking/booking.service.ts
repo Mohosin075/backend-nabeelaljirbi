@@ -889,6 +889,33 @@ const confirmBooking = async (
     console.error("FCM error on booking confirmation:", fcmErr);
   }
 
+  // FCM Push notification to doctor
+  try {
+    if (appointment.doctor?.user?.fcmToken) {
+      const docLang: "ar" | "en" =
+        (appointment.doctor.user as any)?.language === "en" ? "en" : "ar";
+      const docIsEn = docLang === "en";
+      const docTitle = docIsEn ? "Appointment Confirmed" : "تم تأكيد الموعد";
+      const patientName =
+        appointment.patient?.user?.fullName || (docIsEn ? "Patient" : "مريض");
+      const docBody = docIsEn
+        ? `Appointment confirmed for ${patientName} on ${updatedBooking.consultDate}. Queue #${updatedBooking.serialNumber}.`
+        : `تم تأكيد موعد للمريض ${patientName} بتاريخ ${updatedBooking.consultDate}. رقم الانتظار #${updatedBooking.serialNumber}.`;
+
+      await Notification.DoctorNotification(
+        updatedBooking.id,
+        updatedBooking.doctorId,
+        "APPOINTMENT_CONFIRMED",
+        appointment.doctor.user.fcmToken,
+        docLang,
+        {},
+        { title: docTitle, body: docBody, skipDb: false }
+      );
+    }
+  } catch (docFcmErr) {
+    console.error("FCM error notifying doctor on confirmation:", docFcmErr);
+  }
+
   return updatedBooking;
 };
 
@@ -1121,6 +1148,35 @@ const rejectBooking = async (
     }
   } catch (fcmErr) {
     console.error("FCM error on booking rejection:", fcmErr);
+  }
+
+  // FCM Push notification to doctor
+  try {
+    if (appointment.doctor?.user?.fcmToken) {
+      const docLang: "ar" | "en" =
+        (appointment.doctor.user as any)?.language === "en" ? "en" : "ar";
+      const docIsEn = docLang === "en";
+      const docTitle = docIsEn
+        ? "Appointment Request Declined"
+        : "تم رفض طلب الموعد";
+      const patientName =
+        appointment.patient?.user?.fullName || (docIsEn ? "Patient" : "مريض");
+      const docBody = docIsEn
+        ? `Appointment request for ${patientName} on ${rejectedBooking.consultDate} was rejected. Reason: ${reasonText}`
+        : `تم رفض طلب موعد المريض ${patientName} بتاريخ ${rejectedBooking.consultDate}. السبب: ${reasonText}`;
+
+      await Notification.DoctorNotification(
+        rejectedBooking.id,
+        rejectedBooking.doctorId,
+        "APPOINTMENT_REJECTED",
+        appointment.doctor.user.fcmToken,
+        docLang,
+        {},
+        { title: docTitle, body: docBody, skipDb: false }
+      );
+    }
+  } catch (docFcmErr) {
+    console.error("FCM error notifying doctor on rejection:", docFcmErr);
   }
 
   return rejectedBooking;
@@ -1535,6 +1591,51 @@ const cancelBooking = async (
         );
       } catch (fcmErr) {
         console.error("FCM error on cancellation:", fcmErr);
+      }
+    }
+
+    // Step K: FCM push notification to doctor (if not cancelled by doctor)
+    if (cancelledBy !== "DOCTOR" && booking.doctor?.user?.fcmToken) {
+      try {
+        const docLang: "ar" | "en" =
+          (booking.doctor.user as any)?.language === "en" ? "en" : "ar";
+        const docIsEn = docLang === "en";
+        const docTitle = docIsEn ? "Appointment Cancelled" : "تم إلغاء الموعد";
+        const patientName =
+          booking.patient?.user?.fullName || (docIsEn ? "Patient" : "مريض");
+        const docBody = docIsEn
+          ? `Appointment with ${patientName} on ${booking.consultDate} was cancelled. Reason: ${cancelReasonText}`
+          : `تم إلغاء موعد المريض ${patientName} بتاريخ ${booking.consultDate}. السبب: ${cancelReasonText}`;
+
+        await Notification.DoctorNotification(
+          booking.id,
+          booking.doctorId,
+          "APPOINTMENT_CANCELLED",
+          booking.doctor.user.fcmToken,
+          docLang,
+          {},
+          { title: docTitle, body: docBody, skipDb: false }
+        );
+      } catch (docFcmErr) {
+        console.error("FCM error notifying doctor on cancellation:", docFcmErr);
+      }
+    }
+
+    // Step L: FCM push notification to clinic (if cancelled by patient)
+    if (cancelledBy === "PATIENT" && booking.clinic?.user?.fcmToken) {
+      try {
+        const patientName = booking.patient?.user?.fullName || "Patient";
+        await Notification.ClinicNotification(
+          booking.id,
+          booking.clinicId,
+          "APPOINTMENT_CANCELLED",
+          "Appointment Cancelled",
+          `Patient ${patientName} cancelled appointment on ${booking.consultDate}. Reason: ${cancelReasonText}`,
+          booking.clinic.user.fcmToken,
+          { skipDb: false }
+        );
+      } catch (clinicFcmErr) {
+        console.error("FCM error notifying clinic on cancellation:", clinicFcmErr);
       }
     }
 

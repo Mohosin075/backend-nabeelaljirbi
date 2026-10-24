@@ -63,4 +63,11 @@ router.patch(
   BookingController.completeBooking
 );
 
+router.patch(
+  "/:appointmentId/no-show",
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.DOCTOR, UserRole.ADMIN),
+  adminTierGuardForMixedRoles(AdminTier.SUPER_ADMIN),
+  BookingController.markAsNoShow
+);
+
 export const BookingRoutes = router;

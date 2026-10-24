@@ -11,27 +11,36 @@ const DoctorNotification = async (
   notificationType: string,
   fcmToken?: string,
   lang: "ar" | "en" = "ar",
-  variables: Record<string, any> = {}
+  variables: Record<string, any> = {},
+  options?: { title?: string; body?: string; skipDb?: boolean }
 ) => {
   console.log("Sending doctor notification...");
 
-  // Render template if available
-  const rendered = await NotificationTemplateService.renderNotification(
-    notificationType,
-    lang,
-    variables
-  );
+  let title = options?.title;
+  let body = options?.body;
 
-  const title = rendered.title || notificationType;
-  const body = rendered.body || "";
-
-  await prisma.doctorNotification.create({
-    data: {
-      doctorId,
+  if (!title || !body) {
+    const rendered = await NotificationTemplateService.renderNotification(
       notificationType,
-      bookingAppointmentId: appointmentId,
-    },
-  });
+      lang,
+      variables
+    );
+    if (!title && rendered.title) title = rendered.title;
+    if (!body && rendered.body) body = rendered.body;
+  }
+
+  title = title || notificationType;
+  body = body || "";
+
+  if (!options?.skipDb) {
+    await prisma.doctorNotification.create({
+      data: {
+        doctorId,
+        notificationType,
+        bookingAppointmentId: appointmentId,
+      },
+    });
+  }
 
   if (!fcmToken) {
     const doctor = await prisma.doctor.findUnique({

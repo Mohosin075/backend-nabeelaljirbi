@@ -4,7 +4,9 @@ import { paginationFields } from "../../../constants/pagination";
 import catchAsync from "../../../shared/catchAsync";
 import pick from "../../../shared/pick";
 import sendResponse from "../../../shared/sendResponse";
+import { BookingStatus } from "@prisma/client";
 import { BookingService } from "./booking.service";
+import { ClinicService } from "../Clinic/clinic.service";
 
 const createBooking = catchAsync(async (req: Request, res: Response) => {
   const patientId = req.user?.id;
@@ -97,6 +99,26 @@ const rejectBooking = catchAsync(async (req: Request, res: Response) => {
   });
 });
 
+const markAsNoShow = catchAsync(async (req: Request, res: Response) => {
+  const { appointmentId } = req.params;
+  const { reason } = req.body;
+
+  const result = await ClinicService.updateAppointmentStatus(
+    req.user?.id,
+    appointmentId,
+    BookingStatus.NOT_SHOW,
+    reason,
+    req.user?.role,
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Appointment marked as No Show successfully",
+    data: result,
+  });
+});
+
 export const BookingController = {
   createBooking,
   getBookings,
@@ -104,4 +126,5 @@ export const BookingController = {
   rejectBooking,
   cancelBooking,
   completeBooking,
+  markAsNoShow,
 };
