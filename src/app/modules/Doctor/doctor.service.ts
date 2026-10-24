@@ -149,12 +149,12 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
   // `biography` is overloaded: older app builds store the qualifications JSON
   // there, while the CV upload screen stores an S3 URL there. Only mirror it into
   // `qualifications` when it is NOT a URL, so a CV upload never wipes them.
-  const isUrl = (v: unknown) =>
-    typeof v === "string" && /^https?:\/\//i.test(v.trim());
+  const isQualificationsJson = (v: unknown) =>
+    typeof v === "string" && v.trim().startsWith("[");
   const qualificationsVal: string | null | undefined =
     payload.qualifications !== undefined
       ? payload.qualifications
-      : payload.biography !== undefined && !isUrl(payload.biography)
+      : payload.biography !== undefined && isQualificationsJson(payload.biography)
         ? payload.biography
         : undefined;
   const updatedUser = await prisma.user.update({
