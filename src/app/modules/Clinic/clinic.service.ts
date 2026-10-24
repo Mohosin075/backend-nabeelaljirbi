@@ -2008,6 +2008,10 @@ const addClinicManager = async (
 };
 
 async function getClinicByUserId(userId: string) {
+  const directClinic = await prisma.clinic.findUnique({
+    where: { id: userId },
+  });
+  if (directClinic) return directClinic;
   const user = await prisma.user.findUnique({
     where: { id: userId },
     include: {
@@ -2024,7 +2028,7 @@ async function getClinicByUserId(userId: string) {
     throw new ApiError(httpStatus.NOT_FOUND, "User not found");
   }
 
-  if (user.role === UserRole.CLINIC && user.clinic) return user.clinic;
+  if (user.clinic) return user.clinic;
   if (
     user.role === UserRole.MANAGER &&
     user.manager &&
