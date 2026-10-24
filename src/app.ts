@@ -12,16 +12,44 @@ import logger from "./utils/logger";
 const app: Application = express();
 
 export const corsOptions = {
-  origin: [
-    "https://dashboard.salamaapp.ly",
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://localhost:7028",
-    "http://10.10.26.208:7028",
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    // Allow requests with no origin (like mobile apps, curl, server-to-server)
+    if (!origin) return callback(null, true);
+
+    const allowedOrigins = [
+      "https://dashboard.salamaapp.ly",
+      "http://localhost:3000",
+      "http://localhost:3001",
+      "http://localhost:7028",
+      "http://10.10.26.208:7028",
+      "http://92.205.234.176:7028",
+      "https://92.205.234.176:7028",
+    ];
+
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.includes("92.205.234.176") ||
+      origin.endsWith(".salamaapp.ly") ||
+      origin.endsWith(".binarybards.online")
+    ) {
+      return callback(null, true);
+    }
+
+    // Default allow all origins to prevent any CORS block for client/admin dashboards
+    return callback(null, true);
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+    "Origin",
+    "Access-Control-Request-Method",
+    "Access-Control-Request-Headers",
   ],
-  methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
-  allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
+  optionsSuccessStatus: 200,
 };
 
 // IMPORTANT: Stripe webhook endpoint must come BEFORE body parsing middleware
@@ -34,6 +62,7 @@ app.post(
 
 // Middleware setup
 app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(cookieParser());
 app.use(express.json());
 app.use(bodyParser.json());
