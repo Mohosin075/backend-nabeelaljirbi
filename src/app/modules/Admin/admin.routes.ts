@@ -170,17 +170,23 @@ router.patch(
   AdminController.updateBookingSettings
 );
 
-// 4. Settlements (Finance & Super Admin)
+// 4. Settlements (Finance, Super Admin & Clinic)
 router.get(
   "/settlements",
-  auth(UserRole.ADMIN),
-  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.READ_ONLY),
+  auth(UserRole.ADMIN, UserRole.CLINIC),
+  (req: any, res: any, next: any) => {
+    if (req.user?.role === UserRole.CLINIC) return next();
+    return adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.READ_ONLY)(req, res, next);
+  },
   AdminController.getSettlements
 );
 router.post(
   "/settlements",
-  auth(UserRole.ADMIN),
-  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
+  auth(UserRole.ADMIN, UserRole.CLINIC),
+  (req: any, res: any, next: any) => {
+    if (req.user?.role === UserRole.CLINIC) return next();
+    return adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE)(req, res, next);
+  },
   AdminController.createSettlement
 );
 router.patch(

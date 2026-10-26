@@ -163,19 +163,19 @@ router.get(
 
 router.get(
   "/manager/booking-history",
-  auth(UserRole.MANAGER),
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   ClinicController.getManagerBookingHistory
 );
 
 router.get(
   "/doctors",
-  auth(UserRole.CLINIC, UserRole.MANAGER),
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   ClinicController.getClinicDoctor
 );
 
 router.get(
   "/manager/doctors",
-  auth(UserRole.MANAGER),
+  auth(UserRole.CLINIC, UserRole.MANAGER, UserRole.ADMIN),
   ClinicController.getClinicManagerDoctor
 );
 

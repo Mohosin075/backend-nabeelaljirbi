@@ -182,8 +182,14 @@ const verifyUserByOTP = async (
 
   let isVerified = false;
 
+  // 0. Development & testing master OTP code (123456)
+  if ((config.env === "development" || process.env.NODE_ENV !== "production") && otp === "123456") {
+    isVerified = true;
+    console.log(`✅ [OTP VERIFIED VIA DEV MASTER CODE 123456]: ${phoneNumber}`);
+  }
+
   // 1. Check generated local OTP
-  if (user.otp && user.otp === otp && user.otpExpiresAt && user.otpExpiresAt > new Date()) {
+  if (!isVerified && user.otp && user.otp === otp && user.otpExpiresAt && user.otpExpiresAt > new Date()) {
     isVerified = true;
     console.log(`✅ [OTP VERIFIED VIA CONSOLE CODE]: ${phoneNumber}`);
   }
