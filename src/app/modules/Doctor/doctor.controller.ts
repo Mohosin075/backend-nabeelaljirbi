@@ -181,7 +181,7 @@ const cancelJoinRequest = catchAsync(async (req: Request, res: Response) => {
 const getAppointments = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const options = pick(req.query, paginationFields);
-  const filters = pick(req.query, ["searchTerm", "status"]);
+  const filters = pick(req.query, ["searchTerm", "status", "consultDate"]);
 
   const result = await DoctorService.getAppointments(userId!, filters, options);
 

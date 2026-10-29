@@ -1,4 +1,4 @@
-import { Prisma, UserRole, BookingStatus, UserStatus } from "@prisma/client";
+import { Prisma, UserRole, BookingStatus, UserStatus, Country } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
 import { paginationHelpers } from "../../../utils/paginationHelper";
@@ -6,6 +6,7 @@ import prisma from "../../../shared/prisma";
 import { IPaginationOptions } from "../../../interfaces/paginations";
 import { generateTokens } from "../Auth/auth.service";
 import { BookingService } from "../Booking/booking.service";
+import { money, percentageAmount } from "../../../utils/money";
 
 const now = Date.now();
 
@@ -1105,11 +1106,13 @@ const getDoctor = async (doctorId: string, requestedClinicId?: string) => {
             },
           },
           workingDays: {
+            where: { isActive: true },
             select: {
               id: true,
               day: true,
               clinicId: true,
               slots: {
+                where: { isActive: true },
                 select: {
                   id: true,
                   startTime: true,
@@ -1166,11 +1169,14 @@ const getDoctor = async (doctorId: string, requestedClinicId?: string) => {
   // A booking must use an explicitly approved active DoctorClinic link.
   // The legacy Doctor.clinicId pointer is not a source of booking affiliation.
   const publicClinic = selectedClinicLink?.clinic;
-  const publicClinicIds = new Set(
-    publicClinic ? [publicClinic.id] : [],
-  );
+  const country = publicClinic?.user.country?.trim().toUpperCase();
+  const fixedFee = country && Object.values(Country).includes(country as Country)
+    ? await prisma.patientServiceFee.findUnique({ where: { country: country as Country } }) : null;
 
-  // 3️⃣ Shape response, excluding affiliations that are hidden or suspended.
+
+  const scheduleForClinic = (clinicId: string) => doctorUser.doctor!.workingDays.filter(day =>
+    day.clinicId === clinicId || (!day.clinicId && !doctorUser.doctor!.workingDays.some(specific => specific.clinicId === clinicId && specific.day === day.day)));
+  // Shape only approved, visible affiliations and their effective schedules.
   return {
     id: doctorUser.id,
     name: doctorUser.fullName,
@@ -1190,6 +1196,10 @@ const getDoctor = async (doctorId: string, requestedClinicId?: string) => {
     clinicCountry: publicClinic?.user.country,
     clinicServiceFeePercentage: publicClinic?.serviceFeePercentage ?? 0,
     clinicCollectionMode: publicClinic?.collectionMode ?? "MODE_A",
+    fixedPatientServiceFee: fixedFee ? money(fixedFee.amount) : null,
+    patientServiceFeeAmount: publicClinic?.collectionMode === "MODE_B"
+      ? percentageAmount(doctorUser.doctor.consultFee || 0, publicClinic.serviceFeePercentage)
+      : fixedFee ? money(fixedFee.amount) : null,
     clinicPhoto: publicClinic?.galleries ?? [],
     views: publicClinic?.views,
 
@@ -1201,14 +1211,14 @@ const getDoctor = async (doctorId: string, requestedClinicId?: string) => {
       location: dc.clinic.location,
       contactPhone: dc.clinic.contactPhone,
       galleries: dc.clinic.galleries,
+      country: dc.clinic.user.country,
+      schedule: scheduleForClinic(dc.clinicId),
     })),
 
     rating: Number(averageRating.toFixed(1)),
     reviewCount,
 
-    schedule: doctorUser.doctor.workingDays.filter(
-      (day) => !day.clinicId || publicClinicIds.has(day.clinicId),
-    ),
+    schedule: publicClinic ? scheduleForClinic(publicClinic.id) : [],
     about: doctorUser.doctor.about,
 
     clinicId:

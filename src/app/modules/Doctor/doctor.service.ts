@@ -424,6 +424,13 @@ const getAppointments = async (
     andConditions.push({ status: filterData.status });
   }
 
+  if (filterData.consultDate) {
+    const start = new Date(filterData.consultDate);
+    if (isNaN(start.getTime())) throw new ApiError(400, "Invalid appointment date");
+    start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(start); end.setUTCHours(23, 59, 59, 999);
+    andConditions.push({ consultDate: { gte: start, lte: end } });
+  }
   const whereConditions: Prisma.BookingAppointmentWhereInput =
     andConditions.length > 0 ? { AND: andConditions } : {};
 
@@ -461,7 +468,17 @@ const getAppointments = async (
     where: whereConditions,
   });
 
+  const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
+  const dayEnd = new Date(dayStart); dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
+  const [totalBookings, todayCount, upcomingCount, completedCount, earnings] = await Promise.all([
+    prisma.bookingAppointment.count({ where: { doctorId: doctor.id } }),
+    prisma.bookingAppointment.count({ where: { doctorId: doctor.id, consultDate: { gte: dayStart, lt: dayEnd } } }),
+    prisma.bookingAppointment.count({ where: { doctorId: doctor.id, consultDate: { gte: dayEnd }, status: { in: ["PENDING", "CONFIRMED"] } } }),
+    prisma.bookingAppointment.count({ where: { doctorId: doctor.id, status: "COMPLETE" } }),
+    prisma.bookingAppointment.aggregate({ where: { doctorId: doctor.id, status: "COMPLETE" }, _sum: { consultFee: true } }),
+  ]);
   return {
+    statistics: { totalBookings, todayCount, upcomingCount, completedCount, consultationGross: earnings._sum.consultFee || 0 },
     meta: {
       page,
       limit,

@@ -6,7 +6,7 @@
     "start": "node ./dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node -r ts-node/register/transpile-only --test tests/finance.test.cjs",
     "postinstall": "npx prisma generate",
     "db:generate": "npx prisma generate",
     "migrate:dev": "npx prisma migrate dev",

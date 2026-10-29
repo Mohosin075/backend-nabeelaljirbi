@@ -3,8 +3,32 @@ import auth from "../../middlewares/auth";
 import adminTierAuth from "../../middlewares/adminTierAuth";
 import { AdminTier, UserRole } from "@prisma/client";
 import { AdminController } from "./admin.controller";
+import prisma from "../../../shared/prisma";
+import catchAsync from "../../../shared/catchAsync";
+import ApiError from "../../../errors/ApiErrors";
+import { money } from "../../../utils/money";
 
 const router = express.Router();
+
+router.patch("/clinic-payment-settings/:clinicId", auth(UserRole.ADMIN),
+  adminTierAuth(AdminTier.SUPER_ADMIN, AdminTier.FINANCE), catchAsync(async (req, res) => {
+    const clinic = await prisma.clinic.findFirst({ where: { OR: [{ id: req.params.clinicId }, { userId: req.params.clinicId }] } });
+    if (!clinic) throw new ApiError(404, "Clinic not found");
+    const { collectionMode, serviceFeePercentage } = req.body;
+    if (!["MODE_A", "MODE_B"].includes(collectionMode)) throw new ApiError(400, "Select Model A or Model B");
+    const percentage = money(serviceFeePercentage);
+    if (percentage > 100) throw new ApiError(400, "Patient fee percentage must not exceed 100");
+    const result = await prisma.$transaction(async tx => {
+      const updated = await tx.clinic.update({ where: { id: clinic.id }, data: { collectionMode, serviceFeePercentage: percentage } });
+      await tx.adminAuditLog.create({ data: {
+        adminId: req.user.id, adminTier: req.user.adminTier, action: "CLINIC_PAYMENT_SETTINGS_UPDATED",
+        targetType: "CLINIC", targetId: clinic.id,
+        details: { before: { collectionMode: clinic.collectionMode, serviceFeePercentage: clinic.serviceFeePercentage }, after: { collectionMode, serviceFeePercentage: percentage } },
+      } });
+      return updated;
+    });
+    res.json({ success: true, message: "Clinic payment settings updated for future bookings", data: result });
+  }));
 
 // General Stats & Directory
 router.get("/stats", auth(UserRole.ADMIN), AdminController.AdminStats);

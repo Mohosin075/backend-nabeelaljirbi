@@ -11,6 +11,8 @@ import { BookingSchedulerService } from "../../jobs/services/bookingScheduler.se
 import { broadcastBookingUpdate } from "../../../helpars/socket/socketHandler";
 import { BookingService } from "../Booking/booking.service";
 import { createAuditLog } from "../../utils/auditLogger";
+import { settlementOperations } from "./settlement.operations";
+import { money } from "../../../utils/money";
 
 
 
@@ -244,6 +246,9 @@ const getPatients = async (filters: any, options: IPaginationOptions) => {
 };
 
 const updateWallet = async (userId: string, amount: number, currentAdmin?: any) => {
+  const numericAmount = Number(amount);
+  if (!Number.isFinite(numericAmount) || numericAmount === 0) throw new ApiError(400, "Enter a non-zero wallet adjustment");
+  amount = money(Math.abs(numericAmount), false) * Math.sign(numericAmount);
   let user = await prisma.user.findUnique({
     where: { id: userId }
   });
@@ -283,26 +288,17 @@ const updateWallet = async (userId: string, amount: number, currentAdmin?: any) 
   const effectiveUserId = user.id;
 
   const result = await prisma.$transaction(async (tx) => {
-    // Update user's wallet
-    await tx.user.update({
-      where: { id: effectiveUserId },
-      data: {
-        wallet: {
-          increment: amount
-        }
-      }
-    });
-
-    // Create top-up transaction record
-    return await tx.topUp.create({
-      data: {
-        userId: effectiveUserId,
-        amount: amount,
-        type: TopUpType.RECHARGE,
-      }
-    });
-  });
-
+    const owner = await tx.user.findUniqueOrThrow({ where: { id: effectiveUserId } });
+    const pending = await tx.settlement.aggregate({ where: {
+      OR: [{ clinic: { userId: effectiveUserId } }, { doctor: { userId: effectiveUserId } }],
+      status: { in: ["PENDING", "UNDER_REVIEW", "APPROVED"] },
+    }, _sum: { amount: true } });
+    if (amount < 0 && owner.wallet + amount < owner.frozenWallet + (pending._sum.amount || 0)) {
+      throw new ApiError(400, "Deduction would consume held or reserved funds");
+    }
+    await tx.user.update({ where: { id: effectiveUserId }, data: { wallet: { increment: amount } } });
+    return tx.topUp.create({ data: { userId: effectiveUserId, amount: Math.abs(amount), type: amount > 0 ? TopUpType.RECHARGE : TopUpType.PENALTY } });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   await createAuditLog({
     adminId: currentAdmin?.id,
     adminName: currentAdmin?.fullName,
@@ -415,6 +411,8 @@ const getClinics = async (filters: any, options: IPaginationOptions) => {
     isVisible: clinic.isVisible !== false,
     serviceFree: clinic.user?.serviceFree,
     trial: clinic.trial,
+    collectionMode: clinic.collectionMode,
+    serviceFeePercentage: clinic.serviceFeePercentage,
     wallet: clinic.user?.wallet ?? 0,
     status: clinic.user?.status,
     banned: clinic.user?.banned,
@@ -927,7 +925,8 @@ const SetServiceFree = async (userId: string, serviceFree: number, currentAdmin?
     throw new ApiError(httpStatus.NOT_FOUND, "User or Clinic not found");
   }
 
-  const feeValue = Number(serviceFree) || 0;
+  const feeValue = money(serviceFree);
+  if (feeValue > 100) throw new ApiError(400, "Clinic fee percentage must not exceed 100");
 
   const clinic = await prisma.$transaction(async (tx) => {
     if (feeValue > 0) {
@@ -935,7 +934,7 @@ const SetServiceFree = async (userId: string, serviceFree: number, currentAdmin?
         where: { userId: clinicUserId },
         data: {
           trial: false,
-          serviceFeePercentage: feeValue,
+
         },
       });
     } else {
@@ -943,7 +942,7 @@ const SetServiceFree = async (userId: string, serviceFree: number, currentAdmin?
         where: { userId: clinicUserId },
         data: {
           trial: true,
-          serviceFeePercentage: 0,
+
         },
       });
     }
@@ -1623,7 +1622,7 @@ const getFinancialLedger = async (filters: any, options: IPaginationOptions) => 
 
     allEntries.push({
       id: t.id,
-      transactionId: `TX-${t.id.slice(-8).toUpperCase()}`,
+      transactionId: `TX-${t.id}`,
       bookingId: t.appointmentId || null,
       bookingNumber: t.appointment?.serialNumber || null,
       userName: t.user?.fullName || t.user?.phoneNumber || "User",
@@ -1731,7 +1730,7 @@ const getFinancialLedger = async (filters: any, options: IPaginationOptions) => 
   });
 
   // Sort by date descending
-  allEntries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  allEntries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime() || String(a.id).localeCompare(String(b.id)));
 
   // Filter by category
   let filtered = allEntries;
@@ -1884,7 +1883,7 @@ const getSettlements = async (filters: any, options: IPaginationOptions, current
       where: whereConditions,
       skip,
       take: limit,
-      orderBy: sortBy && sortOrder ? { [sortBy]: sortOrder } : { createdAt: "desc" },
+      orderBy: [{ [sortBy || "createdAt"]: sortOrder === "asc" ? "asc" : "desc" }, { id: "asc" }],
       include: {
         clinic: {
           select: {
@@ -1943,206 +1942,7 @@ const getSettlements = async (filters: any, options: IPaginationOptions, current
   };
 };
 
-const createSettlement = async (payload: any, currentParty?: any) => {
-  const { partyType, clinicId, doctorId, amount, notes } = payload;
-
-  const parsedAmount = Number(amount);
-  if (!parsedAmount || isNaN(parsedAmount) || parsedAmount <= 0) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Valid settlement amount is required");
-  }
-
-  let finalPartyType = partyType || "CLINIC";
-  let targetClinicId = clinicId || null;
-  let targetDoctorId = doctorId || null;
-
-  if (currentParty?.role === "CLINIC" || currentParty?.role === "MANAGER") {
-    finalPartyType = "CLINIC";
-    let foundClinic = currentParty.clinic;
-    if (!foundClinic && currentParty.manager && currentParty.manager.length > 0) {
-      foundClinic = await prisma.clinic.findUnique({
-        where: { id: currentParty.manager[0].clinicId },
-        include: { user: true },
-      });
-    }
-    if (!foundClinic) {
-      foundClinic = await prisma.clinic.findFirst({
-        where: { userId: currentParty.id },
-        include: { user: true },
-      });
-    }
-    if (!foundClinic) {
-      throw new ApiError(httpStatus.BAD_REQUEST, "Clinic profile not found for this account");
-    }
-
-    targetClinicId = foundClinic.id;
-    targetDoctorId = null;
-    const targetUserId = foundClinic.userId || foundClinic.user?.id || currentParty.id;
-
-    // Check available balance and pending settlements
-    const clinicOwner = await prisma.user.findUnique({
-      where: { id: targetUserId },
-      select: { wallet: true },
-    });
-    const currentWallet = clinicOwner?.wallet || 0;
-
-    const pendingSum = await prisma.settlement.aggregate({
-      where: {
-        clinicId: targetClinicId,
-        status: { in: ["PENDING", "UNDER_REVIEW", "APPROVED"] },
-      },
-      _sum: { amount: true },
-    });
-    const pendingAmount = pendingSum._sum.amount || 0;
-    const availableForPayout = Math.max(0, currentWallet - pendingAmount);
-
-    if (parsedAmount > availableForPayout) {
-      throw new ApiError(
-        httpStatus.BAD_REQUEST,
-        `Requested settlement amount (${parsedAmount.toFixed(2)} LYD) exceeds available balance (${availableForPayout.toFixed(2)} LYD).`
-      );
-    }
-  } else if (currentParty?.role === "DOCTOR") {
-    throw new ApiError(
-      httpStatus.FORBIDDEN,
-      "Doctor settlements are reserved for platform-supervised services in Phase 2."
-    );
-  } else if (currentParty?.role === "ADMIN") {
-    if (targetClinicId) {
-      finalPartyType = "CLINIC";
-    } else if (targetDoctorId) {
-      finalPartyType = "DOCTOR";
-    }
-  }
-
-  const settlementNumber = `SET-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-  const newSettlement = await prisma.settlement.create({
-    data: {
-      settlementNumber,
-      partyType: finalPartyType,
-      clinicId: targetClinicId,
-      doctorId: targetDoctorId,
-      amount: parsedAmount,
-      status: "PENDING",
-      notes: notes || null,
-    },
-    include: {
-      clinic: true,
-      doctor: true,
-    },
-  });
-
-  return newSettlement;
-};
-
-const updateSettlementStatus = async (settlementId: string, payload: any, currentAdmin?: any) => {
-  const { status, reference, receiptUrl, notes } = payload;
-
-  const settlement = await prisma.settlement.findUnique({
-    where: { id: settlementId },
-    include: {
-      clinic: { include: { user: true } },
-      doctor: { include: { user: true } },
-    },
-  });
-
-  if (!settlement) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Settlement record not found");
-  }
-
-  const updateData: any = {
-    status,
-    notes: notes !== undefined ? notes : settlement.notes,
-    reference: reference !== undefined ? reference : settlement.reference,
-    receiptUrl: receiptUrl !== undefined ? receiptUrl : settlement.receiptUrl,
-    processedByAdminId: currentAdmin?.id,
-  };
-
-  if (status === "APPROVED" && !settlement.processedAt) {
-    updateData.processedAt = new Date();
-  }
-
-  if (status === "COMPLETED") {
-    updateData.completedAt = new Date();
-    if (!settlement.processedAt) {
-      updateData.processedAt = new Date();
-    }
-
-    // Safely deduct wallet balance and log a WITHDRAW TopUp record
-    if (settlement.status !== "COMPLETED") {
-      const targetUserId =
-        settlement.clinic?.userId ||
-        settlement.clinic?.user?.id ||
-        settlement.doctor?.userId ||
-        settlement.doctor?.user?.id;
-
-      if (targetUserId) {
-        await prisma.$transaction([
-          prisma.user.update({
-            where: { id: targetUserId },
-            data: {
-              wallet: { decrement: settlement.amount },
-            },
-          }),
-          prisma.topUp.create({
-            data: {
-              userId: targetUserId,
-              amount: settlement.amount,
-              type: "WITHDRAW",
-            },
-          }),
-        ]);
-      }
-    }
-  }
-
-  // If reverting from COMPLETED back to another status, safely restore balance
-  if (settlement.status === "COMPLETED" && status !== "COMPLETED") {
-    const targetUserId =
-      settlement.clinic?.userId ||
-      settlement.clinic?.user?.id ||
-      settlement.doctor?.userId ||
-      settlement.doctor?.user?.id;
-
-    if (targetUserId) {
-      await prisma.user.update({
-        where: { id: targetUserId },
-        data: {
-          wallet: { increment: settlement.amount },
-        },
-      });
-    }
-  }
-
-  const result = await prisma.settlement.update({
-    where: { id: settlementId },
-    data: updateData,
-    include: {
-      clinic: true,
-      doctor: true,
-      processedBy: true,
-    },
-  });
-
-  await createAuditLog({
-    adminId: currentAdmin?.id,
-    adminName: currentAdmin?.fullName,
-    adminTier: currentAdmin?.adminTier,
-    action: `SETTLEMENT_${status}`,
-    targetType: "SETTLEMENT",
-    targetId: settlementId,
-    details: {
-      settlementNumber: settlement.settlementNumber,
-      amount: settlement.amount,
-      oldStatus: settlement.status,
-      newStatus: status,
-      reference,
-      receiptUrl,
-    },
-  });
-
-  return result;
-};
+const { create: createSettlement, update: updateSettlementStatus } = settlementOperations(prisma);
 
 // 7. Complaints & Dispute Handling
 const getComplaints = async (filters: any, options: IPaginationOptions) => {

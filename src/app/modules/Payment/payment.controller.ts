@@ -71,7 +71,7 @@ const withdraBalance = catchAsync(async (req: Request, res: Response) => {
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
-    message: "Balance transfer successfully",
+    message: "Withdrawal request submitted for Main Admin approval",
     data: result,
   });
 });
@@ -79,7 +79,7 @@ const withdraBalance = catchAsync(async (req: Request, res: Response) => {
 const getTopUpHistory = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user.id;
   const options = pick(req.query, paginationFields);
-  const filters = pick(req.query, ["searchTerm", "startDate", "endDate"]);
+  const filters = pick(req.query, ["searchTerm", "startDate", "endDate", "type"]);
 
   const result = await PaymentServices.getTopUpHistory(
     userId,
@@ -98,7 +98,7 @@ const getTopUpHistory = catchAsync(async (req: Request, res: Response) => {
 const getWithdrawHistory = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user.id;
   const options = pick(req.query, paginationFields);
-  const filters = pick(req.query, ["searchTerm", "startDate", "endDate"]);
+  const filters = pick(req.query, ["searchTerm", "startDate", "endDate", "type"]);
 
   const result = await PaymentServices.getWithdrawHistory(
     userId,

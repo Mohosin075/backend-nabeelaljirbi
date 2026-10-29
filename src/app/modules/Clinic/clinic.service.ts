@@ -117,7 +117,8 @@ const updateClinicProfile = async (userId: string, payload: any) => {
   // 1️⃣ Check if user exists
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new ApiError(httpStatus.NOT_FOUND, "User not found");
-  if (user.profileCompleted && user.role && user.role !== UserRole.CLINIC && user.role !== UserRole.MANAGER) {
+  if (user.role === UserRole.MANAGER) throw new ApiError(403, "Clinic staff cannot change the clinic owner's profile or role");
+  if (user.profileCompleted && user.role && user.role !== UserRole.CLINIC) {
     throw new ApiError(httpStatus.FORBIDDEN, "Only the clinic administrator can update clinic settings");
   }
 
@@ -160,8 +161,8 @@ const updateClinicProfile = async (userId: string, payload: any) => {
             ...(payload.about && { about: payload.about }),
             ...(payload.contactPhone && { contactPhone: payload.contactPhone }),
             ...(payload.location && { location: payload.location }),
-            ...(payload.latitude && { latitude: payload.latitude }),
-            ...(payload.longitude && { longitude: payload.longitude }),
+            ...(payload.latitude !== undefined && { latitude: payload.latitude }),
+            ...(payload.longitude !== undefined && { longitude: payload.longitude }),
             ...(payload.timezone && { timezone: payload.timezone }),
           },
         },
@@ -1201,6 +1202,7 @@ const getClinicStats = async (userId: string) => {
     clinicId = user.manager[0].clinic.id;
   }
 
+  if (!clinicId) throw new ApiError(403, "Clinic membership is required");
   // 🌍 UTC HANDLING: Always use UTC for date boundaries to ensure consistent
   // statistics calculation regardless of server timezone
   const today = new Date();
@@ -1282,11 +1284,17 @@ const getClinicStats = async (userId: string) => {
     }),
     // Doctor
     clinicId
-      ? prisma.doctor.count({ where: { clinicId } })
+      ? prisma.doctorClinic.count({ where: { clinicId, isActive: true } })
       : prisma.doctor.count(),
   ]);
 
+  const [upcomingAppointment, completedMoney] = await Promise.all([
+    prisma.bookingAppointment.count({ where: { clinicId: clinicId!, consultDate: { gte: tomorrow }, status: { in: ["PENDING", "CONFIRMED"] } } }),
+    user.role === "CLINIC" ? prisma.bookingAppointment.aggregate({ where: { clinicId: clinicId!, status: "COMPLETE" }, _sum: { consultFee: true, clinicServiceFee: true } }) : null,
+  ]);
   return {
+    upcomingAppointment,
+    consultationNet: completedMoney ? Number(((completedMoney._sum.consultFee || 0) - (completedMoney._sum.clinicServiceFee || 0)).toFixed(2)) : undefined,
     todayAppointment,
     pendingAppointment,
     confirmedAppointment,
@@ -2188,7 +2196,7 @@ const getDoctorAbsenceCaseload = async (
         lte: endOfDay,
       },
       status: {
-        in: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+        in: [BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.ARRIVED, BookingStatus.INPROGRESS],
       },
     },
     orderBy: [
@@ -2217,7 +2225,7 @@ const getDoctorAbsenceCaseload = async (
     (b) => b.status === BookingStatus.PENDING
   ).length;
   const confirmedCount = affectedBookings.filter(
-    (b) => b.status === BookingStatus.CONFIRMED
+    (b) => [BookingStatus.CONFIRMED, BookingStatus.ARRIVED, BookingStatus.INPROGRESS].includes(b.status as any)
   ).length;
 
   return {
@@ -2227,6 +2235,7 @@ const getDoctorAbsenceCaseload = async (
       speciality: doctor.speciality,
     },
     date,
+    totalAffected: affectedBookings.length,
     summary: {
       totalAffected: affectedBookings.length,
       pendingCount,
@@ -2288,7 +2297,7 @@ const executeDoctorAbsence = async (
         lte: endOfDay,
       },
       status: {
-        in: [BookingStatus.PENDING, BookingStatus.CONFIRMED],
+        in: [BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.ARRIVED, BookingStatus.INPROGRESS],
       },
     },
     orderBy: [
@@ -2333,7 +2342,7 @@ const executeDoctorAbsence = async (
           newStatus: BookingStatus.REJECTED,
           success: true,
         });
-      } else if (booking.status === BookingStatus.CONFIRMED) {
+      } else if ([BookingStatus.CONFIRMED, BookingStatus.ARRIVED, BookingStatus.INPROGRESS].includes(booking.status as any)) {
         await BookingService.cancelBooking(
           booking.id,
           clinicUserId,
@@ -2345,7 +2354,7 @@ const executeDoctorAbsence = async (
           appointmentId: booking.id,
           serialNumber: booking.serialNumber,
           patientName: booking.patient?.user?.fullName || "Patient",
-          previousStatus: BookingStatus.CONFIRMED,
+          previousStatus: booking.status,
           newStatus: BookingStatus.CANCELLED,
           success: true,
         });
@@ -2561,7 +2570,7 @@ const getClinicReconciliationReports = async (
           },
         },
       },
-      orderBy: sortBy && sortOrder ? { [sortBy]: sortOrder } : { consultDate: "desc" },
+      orderBy: [{ [sortBy || "createdAt"]: sortOrder === "asc" ? "asc" : "desc" }, { id: "asc" }],
       skip,
       take: limit,
     }),
@@ -2573,6 +2582,8 @@ const getClinicReconciliationReports = async (
         status: true,
         consultFee: true,
         serviceFeeAmount: true,
+        clinicServiceFee: true,
+        collectionMode: true,
         totalAmount: true,
         clinicId: true,
         clinic: {
@@ -2600,6 +2611,8 @@ const getClinicReconciliationReports = async (
   let totalPending = 0;
   let totalConsultFees = 0;
   let totalServiceFees = 0;
+  let totalPatientServiceFees = 0;
+  let platformCollectedConsultFees = 0;
 
   const doctorSummaryMap = new Map<
     string,
@@ -2615,7 +2628,9 @@ const getClinicReconciliationReports = async (
     if (apt.status === BookingStatus.COMPLETE) {
       totalCompleted++;
       totalConsultFees += apt.consultFee || 0;
-      totalServiceFees += apt.serviceFeeAmount || 0;
+      totalServiceFees += apt.clinicServiceFee || 0;
+      totalPatientServiceFees += apt.serviceFeeAmount || 0;
+      if (apt.collectionMode === "MODE_B") platformCollectedConsultFees += apt.consultFee || 0;
     } else if (
       apt.status === BookingStatus.CONFIRMED ||
       apt.status === BookingStatus.INPROGRESS ||
@@ -2663,7 +2678,7 @@ const getClinicReconciliationReports = async (
       if (apt.status === BookingStatus.COMPLETE) {
         existing.completedBookings++;
         existing.totalConsultFee += apt.consultFee || 0;
-        existing.totalServiceFee += apt.serviceFeeAmount || 0;
+        existing.totalServiceFee += apt.clinicServiceFee || 0;
       }
       clinicSummaryMap.set(apt.clinicId, existing);
     }
@@ -2685,7 +2700,9 @@ const getClinicReconciliationReports = async (
       totalPending,
       totalConsultFees,
       totalServiceFees,
-      netClinicReceivable: totalConsultFees,
+      totalPatientServiceFees,
+      platformCollectedConsultFees,
+      netClinicReceivable: Number((totalConsultFees - totalServiceFees).toFixed(2)),
     },
     doctorBreakdown: Array.from(doctorSummaryMap.values()),
     clinicBreakdown: Array.from(clinicSummaryMap.values()),
@@ -2701,6 +2718,9 @@ const getClinicFinancialSummary = async (userId: string) => {
 
   if (!user) {
     throw new ApiError(httpStatus.NOT_FOUND, "User not found");
+  }
+  if (user.role !== UserRole.CLINIC || !user.clinic) {
+    throw new ApiError(httpStatus.FORBIDDEN, "Clinic financials require a clinic owner account");
   }
 
   let clinicId: string | null = null;
@@ -2720,7 +2740,7 @@ const getClinicFinancialSummary = async (userId: string) => {
     ? { clinicId, status: BookingStatus.COMPLETE }
     : { status: BookingStatus.COMPLETE };
 
-  const [currentMonthAppointments, completedAppointments] = await Promise.all([
+  const [currentMonthAppointments, completedAppointments, lifetimeAppointments] = await Promise.all([
     prisma.bookingAppointment.aggregate({
       where: {
         ...whereClinic,
@@ -2728,7 +2748,7 @@ const getClinicFinancialSummary = async (userId: string) => {
       },
       _sum: {
         consultFee: true,
-        serviceFeeAmount: true,
+        clinicServiceFee: true,
       },
       _count: {
         id: true,
@@ -2737,6 +2757,7 @@ const getClinicFinancialSummary = async (userId: string) => {
     prisma.bookingAppointment.count({
       where: whereClinic,
     }),
+    prisma.bookingAppointment.aggregate({ where: whereClinic, _sum: { consultFee: true, clinicServiceFee: true } }),
   ]);
 
   const recentTransactions = await prisma.topUp.findMany({
@@ -2748,10 +2769,11 @@ const getClinicFinancialSummary = async (userId: string) => {
   return {
     walletBalance: user.wallet || 0,
     frozenWallet: user.frozenWallet || 0,
-    totalEarnings: user.totalEarnings || currentMonthAppointments._sum?.consultFee || 0,
-    currentEarnings: user.currentEarnings || currentMonthAppointments._sum?.consultFee || 0,
+    // User.totalEarnings/currentEarnings belong to referrals, not consultations.
+    totalEarnings: lifetimeAppointments._sum.consultFee || 0,
+    currentEarnings: Number(((currentMonthAppointments._sum.consultFee || 0) - (currentMonthAppointments._sum.clinicServiceFee || 0)).toFixed(2)),
     currentMonthGross: currentMonthAppointments._sum?.consultFee || 0,
-    currentMonthPlatformFees: currentMonthAppointments._sum?.serviceFeeAmount || 0,
+    currentMonthPlatformFees: currentMonthAppointments._sum?.clinicServiceFee || 0,
     currentMonthCompletedCount: currentMonthAppointments._count?.id || 0,
     totalCompletedCount: completedAppointments,
     recentTransactions,

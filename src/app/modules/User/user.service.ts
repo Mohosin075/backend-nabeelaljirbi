@@ -170,7 +170,10 @@ const updateUser = async (payload: Partial<TUser>, userId: string) => {
   const updateUser = await prisma.user.update({
     where: { id: userId },
     data: {
-      ...payload,
+      // Self-service profile editing must never accept wallet, role, tokens or
+      // subscription/approval flags from a request body.
+      ...Object.fromEntries(Object.entries(payload).filter(([key]) =>
+        ["fullName", "phoneNumber", "dateOfBirth", "address", "email", "gender", "country", "city", "profileImage", "fcmToken"].includes(key))),
     },
   });
 

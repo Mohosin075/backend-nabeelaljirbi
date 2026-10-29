@@ -1,4 +1,4 @@
-import { BookingStatus, Prisma, TopUpType, UserRole, WeekDay } from "@prisma/client";
+import { BookingStatus, Country, Prisma, TopUpType, UserRole, WeekDay } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
 import { paginationHelpers } from "../../../utils/paginationHelper";
@@ -9,6 +9,7 @@ import { broadcastBookingUpdate } from "../../../helpars/socket/socketHandler";
 import { Notification } from "../Notification/notification.service";
 import { NotificationTemplateService } from "../NotificationTemplate/notificationTemplate.service";
 import { checkCancellationAllowed, getAppointmentStartUTC } from "../../../utils/timezoneHelper";
+import { calculateBookingFees } from "../../../utils/money";
 
 type BookingActorRole = "PATIENT" | "DOCTOR" | "CLINIC" | "MANAGER" | "ADMIN" | "SYSTEM";
 
@@ -275,24 +276,18 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
   dayEnd.setUTCHours(23, 59, 59, 999);
 
   // 7. Financial calculation: Percentage-based service fee and Collection Mode
-  const consultFee = doctor.consultFee || 0;
-  const serviceFeePercentage = clinic.serviceFeePercentage ?? 10.0;
-  const serviceFeeAmount = Number(
-    ((consultFee * serviceFeePercentage) / 100).toFixed(2)
-  );
-  const collectionMode = clinic.collectionMode || "MODE_A";
-
-  // Section 6: Clinic-side percentage-based service fee lifecycle
-  const clinicServiceFee = !clinic.trial
-    ? Number(((consultFee * serviceFeePercentage) / 100).toFixed(2))
-    : 0;
-
-  // Mode A: Service fee only is frozen (hold)
-  // Mode B: Service fee + consultation fee is frozen (hold)
-  const holdAmount =
-    collectionMode === "MODE_B"
-      ? Number((consultFee + serviceFeeAmount).toFixed(2))
-      : serviceFeeAmount;
+  // Only new bookings use current settings. Never recalculate historical snapshots.
+  const clinicCountry = clinic.user.country?.trim().toUpperCase();
+  const countryFee = clinicCountry && Object.values(Country).includes(clinicCountry as Country)
+    ? await prisma.patientServiceFee.findUnique({ where: { country: clinicCountry as Country } })
+    : null;
+  const { consultFee, serviceFeePercentage, serviceFeeAmount, collectionMode, clinicServiceFee, holdAmount } = calculateBookingFees({
+    consultFee: doctor.consultFee || 0,
+    collectionMode: clinic.collectionMode || "MODE_A",
+    fixedPatientFee: countryFee?.amount,
+    patientPercentage: clinic.serviceFeePercentage ?? 10,
+    clinicPercentage: clinic.trial ? 0 : clinic.user.serviceFree,
+  });
 
   // 8. Patient wallet validation (Available balance = wallet - frozenWallet)
   const currentWallet = user.wallet || 0;
@@ -675,6 +670,11 @@ const confirmBooking = async (
           frozenWallet: { decrement: holdAmount },
         },
       });
+      await tx.topUp.create({ data: {
+        id: `booking:${appointment.id}:patient:debit`,
+        userId: patientUserId, amount: holdAmount,
+        appointmentId: appointment.id, type: TopUpType.BOOKING,
+      } });
     }
 
     // 2. Transfer platform service fee to Admin
@@ -689,6 +689,7 @@ const confirmBooking = async (
       // Record platform fee transaction
       await tx.topUp.create({
         data: {
+          id: `booking:${appointment.id}:patient-fee:credit`,
           userId: adminUser.id,
           amount: serviceFeeAmount,
           appointmentId: appointment.id,
@@ -708,6 +709,7 @@ const confirmBooking = async (
 
       await tx.topUp.create({
         data: {
+          id: `booking:${appointment.id}:consultation:credit`,
           userId: clinicUserId,
           amount: consultFee,
           appointmentId: appointment.id,
@@ -736,6 +738,7 @@ const confirmBooking = async (
 
       await tx.topUp.create({
         data: {
+          id: `booking:${appointment.id}:clinic-fee:debit`,
           userId: clinicUserId,
           amount: clinicServiceFee,
           appointmentId: appointment.id,
@@ -745,6 +748,7 @@ const confirmBooking = async (
 
       await tx.topUp.create({
         data: {
+          id: `booking:${appointment.id}:clinic-fee:credit`,
           userId: adminUser.id,
           amount: clinicServiceFee,
           appointmentId: appointment.id,
@@ -1465,6 +1469,7 @@ const cancelBooking = async (
           data: {
             userId: clinicUserId,
             amount: refundConsultFee,
+            id: `booking:${booking.id}:refund:debit`,
             appointmentId: booking.id,
             type: TopUpType.REFUND,
           },
@@ -1484,6 +1489,7 @@ const cancelBooking = async (
           data: {
             userId: patientUserId,
             amount: totalRefundToPatient,
+            id: `booking:${booking.id}:refund:credit`,
             appointmentId: booking.id,
             type: TopUpType.REFUND,
           },

@@ -1,3 +1,4 @@
+import { settlementOperations } from "../Admin/settlement.operations";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
 import {
@@ -18,6 +19,7 @@ import {
   PatientPlatformSubscription,
   Prisma,
   UserRole,
+  TopUpType,
 } from "@prisma/client";
 
 const CreatePatientPayment = async (
@@ -248,60 +250,11 @@ const StripeGenerateOnboardingLink = async (userId: string) => {
   return generateAccount;
 };
 
+// Preserve the old URL for installed clients, but route it through admin approval.
 const withdraBalance = async (userId: string, amount: number) => {
-  const user = await prisma.user.findUnique({
-    where: {
-      id: userId,
-    },
-  });
-
-  if (!user) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
-  }
-
-  if (!user.stripeDetailsSubmitted && !user.stripePayoutsEnabled) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Stripe account not completed");
-  }
-
-  if (user.wallet < amount) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Insufficient balance");
-  }
-
-  const transfer = await BalanceTransfer(amount, user.stripeAccountId || "");
-  if (transfer.id) {
-    // If Clener need to update wallet
-    await prisma.user.update({
-      where: {
-        id: userId,
-      },
-      data: {
-        wallet: {
-          decrement: amount,
-        },
-      },
-    });
-
-    // top up record
-    await prisma.topUp.create({
-      data: {
-        userId: userId,
-        amount: amount,
-        type: "WITHDRAW",
-      },
-    });
-
-    // Create transfer record
-    // await prisma.withdraw.create({
-    //   data: {
-    //     userId: doctorId,
-    //     amount: amount,
-    //   },
-    // });
-  }
-
-  return transfer;
+  const actor = await prisma.user.findUnique({ where: { id: userId } });
+  return settlementOperations(prisma).create({ amount }, actor);
 };
-
 const getTopUpHistory = async (
   userId: string,
   filters: any,
@@ -312,6 +265,10 @@ const getTopUpHistory = async (
   const { searchTerm, ...filterData } = filters;
 
   const andConditions: Prisma.TopUpWhereInput[] = [];
+  if (filterData.type) {
+    if (!Object.values(TopUpType).includes(filterData.type)) throw new ApiError(400, "Invalid transaction type");
+    andConditions.push({ type: filterData.type });
+  }
 
   andConditions.push({ userId });
 
@@ -332,7 +289,12 @@ const getTopUpHistory = async (
   if (filterData.endDate) {
     andConditions.push({
       createdAt: {
-        lte: new Date(filterData.endDate),
+        lte: (() => {
+          const end = new Date(filterData.endDate);
+          if (isNaN(end.getTime())) throw new ApiError(400, "Invalid end date");
+          if (!String(filterData.endDate).includes("T")) end.setUTCHours(23, 59, 59, 999);
+          return end;
+        })(),
       },
     });
   }
@@ -378,77 +340,48 @@ const getTopUpHistory = async (
     where: whereConditions,
   });
 
+  const settlementIds = topUps.filter(row => row.id.startsWith("settlement:")).map(row => row.id.slice(11, -6));
+  const receipts = settlementIds.length ? await prisma.settlement.findMany({ where: { id: { in: settlementIds } }, select: { id: true, receiptUrl: true, reference: true } }) : [];
+  const receiptMap = new Map(receipts.map(row => [row.id, row]));
   return {
     meta: {
       page,
       limit,
       total,
     },
-    data: topUps,
+    data: topUps.map(row => {
+      const settlementId = row.id.startsWith("settlement:") ? row.id.slice(11, -6) : null;
+      const receipt = settlementId ? receiptMap.get(settlementId) : undefined;
+      return { ...row, amount: Math.abs(row.amount), direction: row.id.endsWith(":credit") ? "CREDIT" : row.id.endsWith(":debit") || row.type === "WITHDRAW" || row.type === "PENALTY" || row.amount < 0 ? "DEBIT" : undefined,
+        settlementId, receiptUrl: receipt?.receiptUrl || null, reference: receipt?.reference || null };
+    }),
   };
 };
 
-const getWithdrawHistory = async (
-  userId: string,
-  filters: any,
-  options: IPaginationOptions,
-) => {
-  const { page, limit, skip, sortBy, sortOrder } =
-    paginationHelpers.calculatePagination(options);
-  const { searchTerm, ...filterData } = filters;
-
-  const andConditions: Prisma.WithdrawWhereInput[] = [];
-
-  andConditions.push({ userId });
-
-  if (searchTerm) {
-    andConditions.push({
-      OR: [{ id: { contains: searchTerm, mode: "insensitive" } }],
-    });
+const getWithdrawHistory = async (userId: string, filters: any, options: IPaginationOptions) => {
+  const { page, limit, skip, sortOrder } = paginationHelpers.calculatePagination(options);
+  const createdAt: any = {};
+  for (const [key, operator] of [["startDate", "gte"], ["endDate", "lte"]]) {
+    if (filters[key]) {
+      const date = new Date(filters[key]);
+      if (isNaN(date.getTime())) throw new ApiError(400, "Invalid history date");
+      if (key === "endDate" && !String(filters[key]).includes("T")) date.setUTCHours(23, 59, 59, 999);
+      createdAt[operator] = date;
+    }
   }
-
-  if (filterData.startDate) {
-    andConditions.push({
-      createdAt: {
-        gte: new Date(filterData.startDate),
-      },
-    });
-  }
-
-  if (filterData.endDate) {
-    andConditions.push({
-      createdAt: {
-        lte: new Date(filterData.endDate),
-      },
-    });
-  }
-
-  const whereConditions: Prisma.WithdrawWhereInput =
-    andConditions.length > 0 ? { AND: andConditions } : {};
-
-  const withdraws = await prisma.withdraw.findMany({
-    where: whereConditions,
-    skip,
-    take: limit,
-    orderBy: {
-      [sortBy]: sortOrder,
-    },
-  });
-
-  const total = await prisma.withdraw.count({
-    where: whereConditions,
-  });
-
-  return {
-    meta: {
-      page,
-      limit,
-      total,
-    },
-    data: withdraws,
-  };
+  const where = { userId, ...(Object.keys(createdAt).length ? { createdAt } : {}),
+    ...(filters.searchTerm ? { id: { contains: String(filters.searchTerm) } } : {}) };
+  // Keep legacy rows visible; never rewrite historical payouts or wallet balances.
+  const [journal, legacy] = await Promise.all([
+    prisma.topUp.findMany({ where: { ...where, type: "WITHDRAW" } }),
+    prisma.withdraw.findMany({ where }),
+  ]);
+  const rows = [
+    ...journal.map(row => ({ ...row, source: "WALLET", direction: "DEBIT" })),
+    ...legacy.map(row => ({ ...row, source: "LEGACY_WITHDRAW", direction: "DEBIT" })),
+  ].sort((a, b) => (sortOrder === "asc" ? 1 : -1) * (a.createdAt.getTime() - b.createdAt.getTime()));
+  return { meta: { page, limit, total: rows.length }, data: rows.slice(skip, skip + limit) };
 };
-
 const getPatientPlatformSubscription = async (userId: string) => {
   const user = await prisma.user.findUnique({
     where: { id: userId },
