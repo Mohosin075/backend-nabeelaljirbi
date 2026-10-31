@@ -12,6 +12,7 @@ import prisma from "../../../shared/prisma";
 import { jwtHelpers } from "../../../utils/jwtHelpers";
 import { paginationHelpers } from "../../../utils/paginationHelper";
 import { TSocialUser, TUser } from "./user.interface";
+import { verifySocialPhone } from "./socialIdentity";
 
 const createUser = async (payload: TUser) => {
   const isUser = await prisma.user.findUnique({
@@ -51,13 +52,14 @@ const createUser = async (payload: TUser) => {
 };
 
 const createSocialUser = async (payload: TSocialUser) => {
+  await verifySocialPhone(payload);
   const isUser = await prisma.user.findUnique({
     where: { phoneNumber: payload.phoneNumber },
   });
 
   if (isUser) {
-    if (isUser.status === UserStatus.DELETED) {
-      throw new ApiError(403, "Your account is deleted");
+    if (isUser.banned || isUser.status !== UserStatus.ACTIVE || isUser.role === UserRole.ADMIN) {
+      throw new ApiError(403, "Account cannot use social sign-in");
     }
 
     const accessToken = jwtHelpers.generateToken(
@@ -267,6 +269,11 @@ const updateStatus = async (userId: string, status: UserStatus) => {
   if (!userId) {
     throw new ApiError(httpStatus.BAD_REQUEST, "User ID is required");
   }
+
+  const target = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
+  if (!target) throw new ApiError(httpStatus.NOT_FOUND, "User not found");
+  if (target.role === UserRole.ADMIN)
+    throw new ApiError(403, "Use the Super Admin staff controls for administrative accounts");
 
   const user = await prisma.user.update({
     where: { id: userId },

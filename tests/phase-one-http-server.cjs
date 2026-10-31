@@ -24,11 +24,16 @@ Module._load = function(request, parent, main) {
 };
 const routers = ['profile.routes', 'account.routes', 'payout.routes', 'booking.routes', 'settings.routes', 'history.routes', 'report.routes'].map(file => Object.values(require(`../src/app/modules/PhaseOne/${file}`)).find(value => typeof value === 'function' && value.stack));
 const { AdminController } = require('../src/app/modules/Admin/admin.controller');
+const { ClinicController } = require('../src/app/modules/Clinic/clinic.controller');
 const testAuth = Module._load('../middlewares/auth').default();
 Module._load = originalLoad;
 function createTestApp() {
   const app = express(); app.use(require('cors')()); app.use(express.json());
   for (const router of routers) app.use('/api/v1/phase-one', router);
+  app.get('/api/v1/clinic/manager/doctors', testAuth, (req,res,next) => {
+    if (!['CLINIC','MANAGER','ADMIN'].includes(req.user.role)) return res.status(403).json({success:false,message:'Clinic staff required'});
+    return ClinicController.getClinicManagerDoctor(req,res,next);
+  });
   // Local synthetic accounts only. Exercise the real legacy read services too.
   const reads = {
     settlements: AdminController.getSettlements,
@@ -42,7 +47,7 @@ function createTestApp() {
   };
   for (const [path, read] of Object.entries(reads)) app.get('/api/v1/admin/' + path, testAuth, async (req, res, next) => {
     try {
-      if (req.user.role !== 'ADMIN') return res.status(403).json({ success: false, message: 'Admin required' });
+      if (req.user.role !== 'ADMIN' && !(path === 'settlements' && req.user.role === 'CLINIC')) return res.status(403).json({ success: false, message: 'Admin required' });
       return read(req, res, next);
     } catch (e) { next(e); }
   });
@@ -51,5 +56,5 @@ function createTestApp() {
 }
 module.exports = { createTestApp, db };
 if (require.main === module) {
-  createTestApp().listen(55440, '127.0.0.1', () => console.log('Isolated synthetic test API on 127.0.0.1:55440'));
+  require('./seed-role-accounts.cjs').seedRoleAccounts(db).then(() => createTestApp().listen(55440, '127.0.0.1', () => console.log('Isolated synthetic test API on 127.0.0.1:55440'))).catch(error=>{console.error(error.message);process.exitCode=1;db.$disconnect();});
 }

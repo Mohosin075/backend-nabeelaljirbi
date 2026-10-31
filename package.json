@@ -12,7 +12,8 @@
     "migrate:dev": "npx prisma migrate dev",
     "migrate:prod": "npx prisma migrate deploy",
     "migrate:status": "npx prisma migrate status",
-    "test:phase-one": "node tests/run-phase-one-integration.cjs"
+    "test:phase-one": "node tests/run-phase-one-integration.cjs",
+    "test:permissions": "node -r ts-node/register/transpile-only --test tests/role-permissions.test.cjs"
   },
   "keywords": [],
   "author": "khalid",

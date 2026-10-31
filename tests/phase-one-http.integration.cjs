@@ -76,3 +76,10 @@ test('legacy admin complaint search uses phone and inclusive dates', async () =>
   assert.ok(body.data.data.some(c => c.id === complaint.id));
   assert.ok(body.data.data.every(c => c.complainant.phoneNumber.includes(complaint.complainant.phoneNumber)));
 });
+
+test('generic moderation cannot bypass Super Admin staff-account controls', async () => {
+  const {AdminService}=require('../src/app/modules/Admin/admin.service');
+  const before=await db.user.findUnique({where:{id:'phase1-admin'}});
+  await assert.rejects(AdminService.bannedUser(before.id,true,'Synthetic permission check',{id:'phase1-admin',role:'ADMIN',adminTier:'OPERATIONS'}),/Super Admin staff controls/);
+  assert.deepEqual(await db.user.findUnique({where:{id:before.id}}),before);
+});

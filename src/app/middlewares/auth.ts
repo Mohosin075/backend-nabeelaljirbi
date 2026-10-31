@@ -32,13 +32,11 @@ const auth = (...roles: string[]) => {
         config.jwt.jwt_secret as Secret
       );
 
+      if (!verifiedUser.id && !verifiedUser.phoneNumber)
+        throw new ApiError(httpStatus.UNAUTHORIZED, "Invalid account identity");
       const user = await prisma.user.findFirst({
-        where: {
-          OR: [
-            ...(verifiedUser.id ? [{ id: verifiedUser.id }] : []),
-            ...(verifiedUser.phoneNumber ? [{ phoneNumber: verifiedUser.phoneNumber }] : []),
-          ],
-        },
+        // A phone correction/reassignment must never change a token's account.
+        where: verifiedUser.id ? { id: verifiedUser.id } : { phoneNumber: verifiedUser.phoneNumber },
         include: {
           clinic: true,
           manager: true,
@@ -53,7 +51,7 @@ const auth = (...roles: string[]) => {
         throw new ApiError(httpStatus.FORBIDDEN, "This account is not active");
       }
 
-      let effectiveRole = user.role || verifiedUser.role;
+      let effectiveRole = user.role;
 
       if (!effectiveRole) {
         if (user.clinic) effectiveRole = "CLINIC";
@@ -62,17 +60,21 @@ const auth = (...roles: string[]) => {
 
       if (
         roles.length &&
-        effectiveRole !== "ADMIN" &&
+        !(effectiveRole === "ADMIN" && (user.adminTier || "SUPER_ADMIN") === "SUPER_ADMIN") &&
         (!effectiveRole || !roles.includes(effectiveRole))
       ) {
         throw new ApiError(httpStatus.FORBIDDEN, "Forbidden!");
       }
 
+      if (effectiveRole === "ADMIN" && user.adminTier === "READ_ONLY" &&
+          ["POST", "PUT", "PATCH", "DELETE"].includes(req.method.toUpperCase()))
+        throw new ApiError(httpStatus.FORBIDDEN, "Read Only administrators cannot modify data");
+
       req.user = {
         ...verifiedUser,
         ...user,
         role: effectiveRole,
-        adminTier: user.adminTier || (verifiedUser as any).adminTier || "SUPER_ADMIN",
+        adminTier: effectiveRole === "ADMIN" ? user.adminTier || "SUPER_ADMIN" : null,
       };
 
       next();

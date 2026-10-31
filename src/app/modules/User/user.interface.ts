@@ -1,4 +1,5 @@
 export type TSocialUser = {
+  idToken: string;
   phoneNumber: string;
   name: string;
   provider: string;

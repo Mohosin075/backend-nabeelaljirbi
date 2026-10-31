@@ -14,8 +14,8 @@ const imageUpload = s3Uploader.single("image");
 
 router.patch(
   "/profile-update",
-  fileUpload,
   auth(UserRole.PATIENT),
+  fileUpload,
   // validateRequest(patientValidation.updatePatientProfileValidationSchema),
   PatientController.updatePatientProfile
 );

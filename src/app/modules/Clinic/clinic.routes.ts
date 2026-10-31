@@ -16,6 +16,10 @@ const requireSuperAdminForAdminOverride = (req: any, res: any, next: any) => {
   if (req.user?.role !== UserRole.ADMIN) return next();
   return adminTierAuth(AdminTier.SUPER_ADMIN)(req, res, next);
 };
+const adminReadAccess = (...tiers: AdminTier[]) => (req: any, res: any, next: any) => {
+  if (req.user?.role !== UserRole.ADMIN) return next();
+  return adminTierAuth(...tiers)(req, res, next);
+};
 
 router.get("/", ClinicController.getClinics);
 
@@ -206,25 +210,29 @@ router.patch(
 
 router.get(
   "/reconciliation-reports",
-  auth(UserRole.CLINIC),
+  auth(UserRole.CLINIC, UserRole.ADMIN),
+  adminReadAccess(AdminTier.SUPER_ADMIN, AdminTier.OPERATIONS, AdminTier.FINANCE, AdminTier.READ_ONLY),
   ClinicController.getClinicReconciliationReports
 );
 
 router.get(
   "/financial-summary",
-  auth(UserRole.CLINIC),
+  auth(UserRole.CLINIC, UserRole.ADMIN),
+  adminReadAccess(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.READ_ONLY),
   ClinicController.getClinicFinancialSummary
 );
 
 router.get(
   "/settlements",
-  auth(UserRole.CLINIC),
+  auth(UserRole.CLINIC, UserRole.ADMIN),
+  adminReadAccess(AdminTier.SUPER_ADMIN, AdminTier.FINANCE, AdminTier.READ_ONLY),
   AdminController.getSettlements
 );
 
 router.post(
   "/settlements",
-  auth(UserRole.CLINIC),
+  auth(UserRole.CLINIC, UserRole.ADMIN),
+  adminReadAccess(AdminTier.SUPER_ADMIN, AdminTier.FINANCE),
   AdminController.createSettlement
 );
 

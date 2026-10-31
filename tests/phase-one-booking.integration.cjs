@@ -39,6 +39,27 @@ test('Requests uses oldest request first while Newest uses newest record first',
   assert.deepEqual((await ops.list(actor, { date: '2030-01-01', sort: 'requests' })).data.map(r => r.id), ids);
   assert.deepEqual((await ops.list(actor, { date: '2030-01-01', sort: 'newest' })).data.map(r => r.id), [...ids].reverse());
 });
+
+test('doctor insurance and clinic profile links cannot be modified through another owner account', async () => {
+  const foreignDoctor = await db.user.create({data:{phoneNumber:`+299${Date.now()}`,role:'DOCTOR',doctor:{create:{}}},include:{doctor:true}});
+  const insurance = await DoctorService.createDoctorInsurance('phase1-doctor-user',{insuranceDetails:'Synthetic private doctor insurance',image:'synthetic.png'});
+  await assert.rejects(DoctorService.updateDoctorInsurance(foreignDoctor.id,insurance.id,{insuranceDetails:'Unauthorized'}),/Insurance not found/);
+  await assert.rejects(DoctorService.deleteDoctorInsurance(foreignDoctor.id,insurance.id),/Insurance not found/);
+  assert.equal((await db.doctorInsurance.findUnique({where:{id:insurance.id}})).insuranceDetails,'Synthetic private doctor insurance');
+  await DoctorService.updateDoctorInsurance('phase1-doctor-user',insurance.id,{insuranceDetails:'Owner edit',doctorId:foreignDoctor.doctor.id});
+  assert.equal((await db.doctorInsurance.findUnique({where:{id:insurance.id}})).doctorId,'phase1-doctor');
+  await DoctorService.deleteDoctorInsurance('phase1-doctor-user',insurance.id);
+  const specialist = await db.specialists.create({data:{name:'Synthetic specialist',image:'synthetic.png'}});
+  const provider = await db.insurances.create({data:{name:'Synthetic insurer',image:'synthetic.png'}});
+  const specialistLink = await db.clinicSpecialist.create({data:{clinicId:'phase1-clinic',specialistId:specialist.id}});
+  const insuranceLink = await db.clinicInsurance.create({data:{clinicId:'phase1-clinic',insuranceId:provider.id}});
+  await assert.rejects(ClinicService.deleteClinicSpecialist(owner.id,specialistLink.id),/Specialist not found/);
+  await assert.rejects(ClinicService.deleteClinicInsurance(owner.id,insuranceLink.id),/Insurance not found/);
+  assert.ok(await db.clinicSpecialist.findUnique({where:{id:specialistLink.id}}));
+  assert.ok(await db.clinicInsurance.findUnique({where:{id:insuranceLink.id}}));
+  await ClinicService.deleteClinicSpecialist('phase1-clinic-user',specialistLink.id);
+  await ClinicService.deleteClinicInsurance('phase1-clinic-user',insuranceLink.id);
+});
 async function pending(mode, date = new Date(Date.now() + 86400000)) {
   const hold = mode === 'MODE_B' ? 83.05 : 7.55;
   return db.$transaction(async tx => {

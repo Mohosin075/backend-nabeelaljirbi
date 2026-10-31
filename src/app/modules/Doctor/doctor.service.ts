@@ -535,6 +535,7 @@ const updateDoctorInsurance = async (
   const isExist = await prisma.doctorInsurance.findUnique({
     where: {
       id: insuranceId,
+      doctorId: doctor.doctor.id,
     },
   });
 
@@ -545,8 +546,9 @@ const updateDoctorInsurance = async (
   return await prisma.doctorInsurance.update({
     where: {
       id: insuranceId,
+      doctorId: doctor.doctor.id,
     },
-    data: payload,
+    data: { insuranceDetails: payload.insuranceDetails, image: payload.image },
   });
 };
 
@@ -562,6 +564,7 @@ const deleteDoctorInsurance = async (userId: string, insuranceId: string) => {
   const isExist = await prisma.doctorInsurance.findUnique({
     where: {
       id: insuranceId,
+      doctorId: doctor.doctor.id,
     },
   });
 
@@ -572,6 +575,7 @@ const deleteDoctorInsurance = async (userId: string, insuranceId: string) => {
   await prisma.doctorInsurance.delete({
     where: {
       id: insuranceId,
+      doctorId: doctor.doctor.id,
     },
   });
 };

@@ -13,7 +13,7 @@ router.post(
   PrepaidCardController.createPrepaidCard
 );
 
-router.post("/top-up", auth(), PrepaidCardController.purchasePrepaidCard);
+router.post("/top-up", auth(UserRole.PATIENT, UserRole.DOCTOR, UserRole.CLINIC), PrepaidCardController.purchasePrepaidCard);
 
 router.get(
   "/top-up-purchase-list",

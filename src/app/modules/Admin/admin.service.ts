@@ -539,6 +539,8 @@ const suspendUserWithRefund = async (targetId: string, suspended: boolean, reaso
   if (!user) {
     throw new ApiError(httpStatus.NOT_FOUND, "Target user, doctor, or clinic not found");
   }
+  if (user.role === UserRole.ADMIN)
+    throw new ApiError(403, "Use the Super Admin staff controls for administrative accounts");
 
   // 2. If unsuspend / reactivate:
   if (!suspended) {

@@ -7,7 +7,7 @@ import { referralValidation } from "./referral.validation";
 
 const router = express.Router();
 
-router.post('/apply', auth(), ReferralController.ReferralBonus)
-router.post('/claim-bonus', auth(), ReferralController.claimRefelarsBunus)
+router.post('/apply', auth(UserRole.PATIENT, UserRole.DOCTOR, UserRole.CLINIC), ReferralController.ReferralBonus)
+router.post('/claim-bonus', auth(UserRole.PATIENT, UserRole.DOCTOR, UserRole.CLINIC), ReferralController.claimRefelarsBunus)
 
 export const ReferralRoutes = router;

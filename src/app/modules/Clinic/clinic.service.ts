@@ -251,13 +251,13 @@ const deleteClinicSpecialist = async (userId: string, specialistId: string) => {
   const clinic = await getClinicByUserId(userId);
 
   const specialist = await prisma.clinicSpecialist.findUnique({
-    where: { id: specialistId },
+    where: { id: specialistId, clinicId: clinic.id },
   });
   if (!specialist)
     throw new ApiError(httpStatus.NOT_FOUND, "Specialist not found");
 
   await prisma.clinicSpecialist.delete({
-    where: { id: specialistId },
+    where: { id: specialistId, clinicId: clinic.id },
   });
 };
 
@@ -375,13 +375,13 @@ const deleteClinicInsurance = async (userId: string, insuranceId: string) => {
   const clinic = await getClinicByUserId(userId);
 
   const insurance = await prisma.clinicInsurance.findUnique({
-    where: { id: insuranceId },
+    where: { id: insuranceId, clinicId: clinic.id },
   });
   if (!insurance)
     throw new ApiError(httpStatus.NOT_FOUND, "Insurance not found");
 
   await prisma.clinicInsurance.delete({
-    where: { id: insuranceId },
+    where: { id: insuranceId, clinicId: clinic.id },
   });
 };
 

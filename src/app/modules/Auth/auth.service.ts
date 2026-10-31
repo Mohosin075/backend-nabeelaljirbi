@@ -173,20 +173,10 @@ const verifyUserByOTP = async (
 ) => {
   const user = await prisma.user.findUnique({ where: { phoneNumber } });
   if (!user) throw new ApiError(httpStatus.NOT_FOUND, "User not found");
-
-  console.log(`\n========================================`);
-  console.log(`🔍 [VERIFY OTP ATTEMPT]`);
-  console.log(`👤 Phone Number : ${phoneNumber}`);
-  console.log(`🔑 Entered Code : ${otp}`);
-  console.log(`========================================\n`);
+  if (user.banned || user.status !== "ACTIVE")
+    throw new ApiError(httpStatus.FORBIDDEN, "Account is inactive or banned");
 
   let isVerified = false;
-
-  // 0. Development & testing master OTP code (123456)
-  if ((config.env === "development" || process.env.NODE_ENV !== "production") && otp === "123456") {
-    isVerified = true;
-    console.log(`✅ [OTP VERIFIED VIA DEV MASTER CODE 123456]: ${phoneNumber}`);
-  }
 
   // 1. Check generated local OTP
   if (!isVerified && user.otp && user.otp === otp && user.otpExpiresAt && user.otpExpiresAt > new Date()) {
