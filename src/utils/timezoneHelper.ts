@@ -6,6 +6,18 @@
 
 export const DEFAULT_CLINIC_TIMEZONE = "Africa/Tripoli";
 
+/** Calendar dates are clinic-local; their stored representation is UTC midnight. */
+export function getClinicCalendarDate(now: Date, timeZone = DEFAULT_CLINIC_TIMEZONE): Date {
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat("en-US", { timeZone: timeZone || DEFAULT_CLINIC_TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now);
+  } catch {
+    parts = new Intl.DateTimeFormat("en-US", { timeZone: DEFAULT_CLINIC_TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now);
+  }
+  const value = (type: string) => Number(parts.find(part => part.type === type)?.value);
+  return new Date(Date.UTC(value("year"), value("month") - 1, value("day")));
+}
+
 /**
  * Calculates the exact timezone offset in minutes for a specific date in an IANA timezone.
  * Returns the difference in minutes (e.g., +120 for Africa/Tripoli).
@@ -86,7 +98,7 @@ export const checkCancellationAllowed = (
   const deadlineUTC = new Date(
     appointmentUTC.getTime() - requiredHoursNotice * 60 * 60 * 1000
   );
-  const now = new Date();
+  const now = new Date(Date.now());
 
   const diffMs = appointmentUTC.getTime() - now.getTime();
   const hoursRemaining = diffMs / (1000 * 60 * 60);

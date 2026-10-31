@@ -32,6 +32,12 @@ before(async () => {
   admin = await db.user.findUnique({ where: { id: 'phase1-admin' } });
 });
 after(() => db.$disconnect());
+async function confirmBeforeDeadline(id, action = () => BookingService.confirmBooking(id,owner.id,'CLINIC')) {
+  const booking = await db.bookingAppointment.findUnique({where:{id}});
+  const starts = require('../src/utils/timezoneHelper').getAppointmentStartUTC(booking.consultDate,booking.startTime,clinic.timezone).getTime();
+  const originalNow=Date.now;Date.now=()=>Math.min(originalNow(),starts-1);
+  try { return await action(); } finally {Date.now=originalNow;}
+}
 test('Requests uses oldest request first while Newest uses newest record first', async () => {
   const ids = [];
   for (const [day, serial] of [['2026-09-01', 101], ['2026-09-02', 102]]) ids.push((await db.bookingAppointment.create({ data: { patientId: patient.patient.id, doctorId: doctor.id, clinicId: clinic.id, consultDate: new Date('2030-01-01T00:00:00Z'), serialNumber: serial, status: 'CANCELLED', createdAt: new Date(day) } })).id);
@@ -80,7 +86,7 @@ test('pending doctor absence releases full hold and records cancellation and a p
 for (const mode of ['MODE_A', 'MODE_B']) test(`${mode}: confirmation captures once; doctor absence after arrival follows normal refund rules`, async () => {
   const b = await pending(mode, new Date(Date.now() - 86400000));
   const before = await db.user.findUnique({ where: { id: patient.id } });
-  await BookingService.confirmBooking(b.id, owner.id, 'CLINIC');
+  await confirmBeforeDeadline(b.id);
   await assert.rejects(BookingService.confirmBooking(b.id, owner.id, 'CLINIC'), /Cannot confirm/);
   await ClinicService.updateAppointmentStatus(owner.id, b.id, 'ARRIVED', undefined, 'CLINIC');
   await BookingService.cancelBooking(b.id, owner.id, 'CLINIC', 'Doctor absent after arrival', 'DOCTOR_ABSENT');
@@ -121,7 +127,7 @@ test('approved doctor and clinic can edit public descriptions without changing c
 test('manual bulk confirm, arrive and complete work for both models without charging again on completion', async () => {
   const bookings = [await pending('MODE_A', new Date(Date.now() - 86400000)), await pending('MODE_B', new Date(Date.now() - 86400000))];
   const actor = { id: owner.id, role: 'CLINIC' }, ids = bookings.map(b => b.id);
-  assert.equal((await ops.bulk(actor, { ids, action: 'CONFIRMED' })).successCount, 2);
+  assert.equal((await confirmBeforeDeadline(ids[0], () => ops.bulk(actor, { ids, action: 'CONFIRMED' }))).successCount, 2);
   const charged = await db.user.findUnique({ where: { id: patient.id } });
   assert.equal((await ops.bulk(actor, { ids, action: 'ARRIVED' })).successCount, 2);
   assert.equal((await ops.bulk(actor, { ids, action: 'COMPLETE' })).successCount, 2);
@@ -132,7 +138,7 @@ test('manual bulk confirm, arrive and complete work for both models without char
 });
 test('patient no-show retains separate metadata and cannot later be reclassified for another refund', async () => {
   const booking = await pending('MODE_A', new Date(Date.now() - 86400000));
-  await BookingService.confirmBooking(booking.id, owner.id, 'CLINIC');
+  await confirmBeforeDeadline(booking.id);
   const actor = { id: owner.id, role: 'CLINIC' };
   assert.equal((await ops.bulk(actor, { ids: [booking.id], action: 'PATIENT_NO_SHOW', reason: 'Patient did not attend' })).successCount, 1);
   const saved = await db.bookingAppointment.findUnique({ where: { id: booking.id } });

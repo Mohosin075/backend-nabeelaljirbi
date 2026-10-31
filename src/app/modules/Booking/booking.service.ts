@@ -8,7 +8,7 @@ import { BookingSchedulerService } from "../../jobs/services/bookingScheduler.se
 import { broadcastBookingUpdate } from "../../../helpars/socket/socketHandler";
 import { Notification } from "../Notification/notification.service";
 import { NotificationTemplateService } from "../NotificationTemplate/notificationTemplate.service";
-import { checkCancellationAllowed, getAppointmentStartUTC } from "../../../utils/timezoneHelper";
+import { checkCancellationAllowed, getAppointmentStartUTC, getClinicCalendarDate } from "../../../utils/timezoneHelper";
 import { calculateBookingFees, bookingCurrencyCode } from "../../../utils/money";
 import { assertArrivalWindow } from "../PhaseOne/phaseOne.policy";
 
@@ -183,8 +183,7 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
     throw new ApiError(httpStatus.BAD_REQUEST, "Invalid consult date");
   }
 
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
+  const today = getClinicCalendarDate(new Date(Date.now()), clinic.timezone);
 
   const platformBookingSetting = await prisma.platformBookingSetting.findFirst();
   const maxDays = platformBookingSetting?.advanceBookingDays ?? clinic.advanceBookingDays ?? 14;
@@ -558,7 +557,7 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
   try {
     const adminUser = await prisma.user.findUnique({
       where: { phoneNumber: `${process.env.ADMIN_PHONE_NUMBER}` },
-    });
+    }) || await prisma.user.findFirst({ where: { role: UserRole.ADMIN } });
 
     if (adminUser) {
       await BookingSchedulerService.schedulePendingBookingTimeout({
@@ -638,6 +637,11 @@ const confirmBooking = async (
       httpStatus.BAD_REQUEST,
       `Cannot confirm appointment with status ${appointment.status}`
     );
+  }
+  if (appointment.startTime && getAppointmentStartUTC(
+    appointment.consultDate, appointment.startTime, appointment.clinic.timezone,
+  ).getTime() <= Date.now()) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "The clinic response deadline has passed; reject this expired request instead");
   }
 
   let adminUser = await prisma.user.findUnique({

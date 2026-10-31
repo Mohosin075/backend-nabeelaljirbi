@@ -52,7 +52,7 @@ const quote = value => '"' + value.replaceAll('"', '""') + '"';
   fs.writeFileSync(path.join(folder, 'migration-verification.json'), JSON.stringify({ database: name, checkedTables: tables.size, preservedRows: Object.values(before).reduce((n, rows) => n + rows.length, 0), applications: 2, legacyValuesUnchanged: true }, null, 2));
   console.log(`Migration preserved every existing column in ${tables.size} tables, twice. Test DB: ${name}`);
   await db.$disconnect();
-  for (const file of ['phase-one.integration.cjs', 'phase-one-access.integration.cjs', 'phase-one-booking.integration.cjs', 'phase-one-history.integration.cjs', 'phase-one-http.integration.cjs']) {
+  for (const file of ['phase-one.integration.cjs', 'phase-one-access.integration.cjs', 'phase-one-booking.integration.cjs', 'phase-one-history.integration.cjs', 'booking-flow.integration.cjs', 'phase-one-http.integration.cjs']) {
     const result = spawnSync(process.execPath, ['-r', 'ts-node/register/transpile-only', '--test', path.join(__dirname, file)], { cwd: root, env: { ...process.env, SALAMA_PHASE1_TEST_URL: url }, stdio: 'inherit' });
     if (result.status !== 0) throw Error(`${file} failed (exit ${result.status})`);
   }

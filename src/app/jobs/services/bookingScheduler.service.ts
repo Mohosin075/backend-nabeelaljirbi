@@ -1,6 +1,6 @@
 import { bookingNotificationQueue, appointmentLifecycleQueue } from '../queues/bookingQueue';
 import { redis } from '../../../helpars/redisServer';
-import { BookingStatus } from '@prisma/client';
+import { BookingStatus, UserRole } from '@prisma/client';
 import prisma from '../../../shared/prisma';
 import { getAppointmentStartUTC, DEFAULT_CLINIC_TIMEZONE } from '../../../utils/timezoneHelper';
 
@@ -475,7 +475,7 @@ export async function repairActiveLifecycleJobs(): Promise<void> {
     const adminUser = await prisma.user.findUnique({
       where: { phoneNumber: `${process.env.ADMIN_PHONE_NUMBER}` },
       select: { id: true },
-    });
+    }) || await prisma.user.findFirst({ where: { role: UserRole.ADMIN }, select: { id: true } });
 
     if (!adminUser) {
       console.log('Skipping lifecycle job repair: admin user not found');
@@ -489,6 +489,7 @@ export async function repairActiveLifecycleJobs(): Promise<void> {
             BookingStatus.PENDING,
             BookingStatus.CONFIRMED,
             BookingStatus.INPROGRESS,
+            BookingStatus.ARRIVED,
           ],
         },
       },
@@ -521,6 +522,11 @@ export async function repairActiveLifecycleJobs(): Promise<void> {
 
     for (const booking of bookings) {
       try {
+        // Do not invent a deadline for a legacy row without its working period.
+        if (booking.status === BookingStatus.PENDING ? !booking.startTime : !booking.endTime) {
+          console.warn(`Skipping lifecycle repair for ${booking.id}: working period time is missing`);
+          continue;
+        }
         if (booking.status === BookingStatus.PENDING) {
           await schedulePendingBookingTimeout({
             appointmentId: booking.id,

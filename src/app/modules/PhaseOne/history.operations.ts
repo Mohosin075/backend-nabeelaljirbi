@@ -132,16 +132,15 @@ export function historyOperations(db: PrismaClient) {
           reference: receipt?.reference || null,
           payoutMethod: receipt?.payoutMethod || null,
           direction:
-            row.id.endsWith(":debit") ||
-            row.type === "WITHDRAW" ||
-            row.type === "PENALTY" ||
-            row.amount < 0
+            row.id.endsWith(":debit") || row.amount < 0
               ? "DEBIT"
-              : row.id.endsWith(":credit") ||
-                  row.type === "RECHARGE" ||
-                  row.type === "REFERALL"
+              : row.id.endsWith(":credit")
                 ? "CREDIT"
-                : "HISTORICAL_UNSPECIFIED",
+                : row.type === "WITHDRAW" || row.type === "PENALTY"
+                  ? "DEBIT"
+                  : row.type === "RECHARGE" || row.type === "REFERALL"
+                    ? "CREDIT"
+                    : "HISTORICAL_UNSPECIFIED",
         };
       }),
       meta: { page, limit, total },

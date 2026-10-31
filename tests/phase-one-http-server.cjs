@@ -6,11 +6,12 @@ const originalLoad = Module._load;
 const noop = new Proxy({}, { get: () => async () => undefined });
 Module._load = function(request, parent, main) {
   if (request.endsWith('/shared/prisma')) return { __esModule: true, default: db };
-  if (request.endsWith('/middlewares/auth')) return { __esModule: true, default: () => async (req, res, next) => {
+  if (request.endsWith('/middlewares/auth')) return { __esModule: true, default: (...roles) => async (req, res, next) => {
     try {
       const id = String(req.headers.authorization || '').replace(/^Bearer /i, '');
       const user = await db.user.findUnique({ where: { id } });
       if (!user || user.banned || user.status !== 'ACTIVE') return res.status(401).json({ success: false, message: 'Test account is inactive or missing' });
+      if (roles.length && !roles.includes(user.role) && !(user.role === 'ADMIN' && (user.adminTier || 'SUPER_ADMIN') === 'SUPER_ADMIN')) return res.status(403).json({success:false,message:'Role not permitted'});
       req.user = { ...user, adminTier: user.adminTier || 'SUPER_ADMIN' }; next();
     } catch (e) { next(e); }
   } };
@@ -25,11 +26,20 @@ Module._load = function(request, parent, main) {
 const routers = ['profile.routes', 'account.routes', 'payout.routes', 'booking.routes', 'settings.routes', 'history.routes', 'report.routes'].map(file => Object.values(require(`../src/app/modules/PhaseOne/${file}`)).find(value => typeof value === 'function' && value.stack));
 const { AdminController } = require('../src/app/modules/Admin/admin.controller');
 const { ClinicController } = require('../src/app/modules/Clinic/clinic.controller');
+const { PatientController } = require('../src/app/modules/Patient/patient.controller');
+const { DoctorController } = require('../src/app/modules/Doctor/doctor.controller');
+const { BookingRoutes } = require('../src/app/modules/Booking/booking.routes');
 const testAuth = Module._load('../middlewares/auth').default();
 Module._load = originalLoad;
 function createTestApp() {
   const app = express(); app.use(require('cors')()); app.use(express.json());
   for (const router of routers) app.use('/api/v1/phase-one', router);
+  app.use('/api/v1/booking', BookingRoutes);
+  const forRole = role => (req,res,next) => req.user.role === role ? next() : res.status(403).json({success:false,message:'Role not permitted'});
+  app.post('/api/v1/patient/appointment-booking',testAuth,forRole('PATIENT'),require('../src/app/middlewares/validateRequest').default(require('../src/app/modules/Booking/booking.validation').bookingValidation.createBookingValidationSchema),PatientController.bookingAppointment);
+  app.get('/api/v1/patient/appointment-history',testAuth,forRole('PATIENT'),PatientController.getAppointmentHistory);
+  app.patch('/api/v1/patient/appointment-arrived/:bookingId',testAuth,forRole('PATIENT'),PatientController.markAppointmentArrived);
+  app.get('/api/v1/doctor/appointments',testAuth,forRole('DOCTOR'),DoctorController.getAppointments);
   app.get('/api/v1/clinic/manager/doctors', testAuth, (req,res,next) => {
     if (!['CLINIC','MANAGER','ADMIN'].includes(req.user.role)) return res.status(403).json({success:false,message:'Clinic staff required'});
     return ClinicController.getClinicManagerDoctor(req,res,next);
@@ -56,5 +66,8 @@ function createTestApp() {
 }
 module.exports = { createTestApp, db };
 if (require.main === module) {
-  require('./seed-role-accounts.cjs').seedRoleAccounts(db).then(() => createTestApp().listen(55440, '127.0.0.1', () => console.log('Isolated synthetic test API on 127.0.0.1:55440'))).catch(error=>{console.error(error.message);process.exitCode=1;db.$disconnect();});
+  require('./seed-role-accounts.cjs').seedRoleAccounts(db).then(fixture => {
+    const fs=require('node:fs');fs.mkdirSync('tmp',{recursive:true});fs.writeFileSync('tmp/booking-browser-fixture.json',JSON.stringify(fixture));
+    return createTestApp().listen(55440, '127.0.0.1', () => console.log('Isolated synthetic test API on 127.0.0.1:55440'));
+  }).catch(error=>{console.error(error.message);process.exitCode=1;db.$disconnect();});
 }

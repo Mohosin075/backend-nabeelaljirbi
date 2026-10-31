@@ -161,7 +161,7 @@ const bookingAppointment = catchAsync(async (req: Request, res: Response) => {
     clinicId,
     doctorId,
     workingSlotId,
-    consultDate,
+    consultDate: consultDate || req.body.date,
     bookedFor,
     familyMemberName,
     familyMemberRelation,

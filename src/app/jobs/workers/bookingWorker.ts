@@ -13,6 +13,7 @@ import { broadcastBookingUpdate } from '../../../helpars/socket/socketHandler';
 import admin from '../../../helpars/firebase/firebase';
 import { NotificationTemplateService } from '../../modules/NotificationTemplate/notificationTemplate.service';
 import { Notification } from '../../modules/Notification/notification.service';
+import { bookingCurrencyCode } from '../../../utils/money';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Booking Notification Worker (existing — 24h / 3h reminders)
@@ -329,6 +330,7 @@ export const appointmentLifecycleWorker = new Worker<
           // Patient refund
           await tx.topUp.create({
             data: {
+              id: `booking:${appointmentId}:refund:credit`,
               userId: patientUserId,
               amount: patientDeductedFee,
               appointmentId,
@@ -338,6 +340,7 @@ export const appointmentLifecycleWorker = new Worker<
           // Admin giving back patient refund
           await tx.topUp.create({
             data: {
+              id: `booking:${appointmentId}:refund:debit`,
               userId: adminUserId,
               amount: patientDeductedFee,
               appointmentId,
@@ -350,6 +353,7 @@ export const appointmentLifecycleWorker = new Worker<
         if (clinicPenalty > 0) {
           await tx.topUp.create({
             data: {
+              id: `booking:${appointmentId}:clinic-penalty:debit`,
               userId: clinicUserId,
               amount: clinicPenalty,
               appointmentId,
@@ -359,6 +363,7 @@ export const appointmentLifecycleWorker = new Worker<
           // Admin receiving clinic penalty
           await tx.topUp.create({
             data: {
+              id: `booking:${appointmentId}:clinic-penalty:credit`,
               userId: adminUserId,
               amount: clinicPenalty,
               appointmentId,
@@ -514,10 +519,10 @@ export const appointmentLifecycleWorker = new Worker<
       const notifTitle = isEn ? "Appointment Auto-Settled" : "تسوية تلقائية للموعد";
       const notifDesc = isEn
         ? (isModeB && consultFee > 0
-            ? `Your appointment was unresolved after the period end. The consultation amount of ${consultFee} LYD has been refunded to your wallet. The service fee captured at confirmation is non-refundable.`
+            ? `Your appointment was unresolved after the period end. The consultation amount of ${consultFee} ${bookingCurrencyCode(appointment.feeCountry)} has been refunded to your wallet. The service fee captured at confirmation is non-refundable.`
             : 'Your appointment was marked as unresolved after the scheduled period. The service fee captured at confirmation is non-refundable.')
         : (isModeB && consultFee > 0
-            ? `لم تتم معالجة موعدك بعد انتهاء الفترة. تم استرداد مبلغ الاستشارة وقدره ${consultFee} دينار ليبي إلى محفظتك. رسوم الخدمة غير قابلة للاسترداد.`
+            ? `لم تتم معالجة موعدك بعد انتهاء الفترة. تم استرداد مبلغ الاستشارة وقدره ${consultFee} ${bookingCurrencyCode(appointment.feeCountry)} إلى محفظتك. رسوم الخدمة غير قابلة للاسترداد.`
             : 'تم تصنيف موعدك بأنه غير مكتمل بعد انتهاء الفترة. رسوم الخدمة غير قابلة للاسترداد.');
 
       const clinicNotifTitle = isEn ? "Appointment Neglected & Auto-Closed" : "إغلاق تلقائي لموعد لم يتم حضوره";
@@ -531,6 +536,7 @@ export const appointmentLifecycleWorker = new Worker<
           where: { id: appointmentId, status: BookingStatus.CONFIRMED },
           data: {
             status: BookingStatus.NOT_SHOW,
+            ...(isModeB && consultFee > 0 ? { refundPatient: true, returnPatientBalance: true } : {}),
             cancellationReason: "Auto-settled: Neglected (no arrival recorded)",
             ...({ noShowReason: "Auto-settled: Neglected (no arrival recorded)" } as any),
           },
@@ -539,6 +545,21 @@ export const appointmentLifecycleWorker = new Worker<
 
         // 2. Refund consultation fee if Mode B
         if (isModeB && consultFee > 0 && patient?.userId) {
+          // Confirmation credited this amount to the clinic. Refund both sides
+          // in the same state-claim transaction, just like manual cancellation.
+          await tx.user.update({
+            where: { id: appointment.clinic.userId },
+            data: { wallet: { decrement: consultFee } },
+          });
+          await tx.topUp.create({
+            data: {
+              id: `booking:${appointment.id}:refund:debit`,
+              userId: appointment.clinic.userId,
+              amount: consultFee,
+              appointmentId: appointment.id,
+              type: TopUpType.REFUND,
+            },
+          });
           await tx.user.update({
             where: { id: patient.userId },
             data: { wallet: { increment: consultFee } },
@@ -546,6 +567,7 @@ export const appointmentLifecycleWorker = new Worker<
 
           await tx.topUp.create({
             data: {
+              id: `booking:${appointment.id}:refund:credit`,
               userId: patient.userId,
               amount: consultFee,
               appointmentId: appointment.id,

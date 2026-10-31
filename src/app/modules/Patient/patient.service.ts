@@ -8,6 +8,7 @@ import { IPaginationOptions } from "../../../interfaces/paginations";
 import { generateTokens } from "../Auth/auth.service";
 import { BookingService } from "../Booking/booking.service";
 import { money, percentageAmount } from "../../../utils/money";
+import { getClinicCalendarDate } from "../../../utils/timezoneHelper";
 
 const now = Date.now();
 
@@ -1198,6 +1199,7 @@ const getDoctor = async (doctorId: string, requestedClinicId?: string) => {
     clinicName: publicClinic?.clinicName,
     clinicLogo: publicClinic?.logo,
     clinicCountry: publicClinic?.user.country,
+    clinicLocalDate: publicClinic ? getClinicCalendarDate(new Date(Date.now()), publicClinic.timezone).toISOString().slice(0, 10) : null,
     clinicServiceFeePercentage: fixedFee?.modelBPercentage ?? publicClinic?.serviceFeePercentage ?? 0,
     clinicCollectionMode: publicClinic?.collectionMode ?? "MODE_A",
     fixedPatientServiceFee: fixedFee ? money(fixedFee.amount) : null,
