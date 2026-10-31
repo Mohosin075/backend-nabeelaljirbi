@@ -1,3 +1,4 @@
+import { assertProfileEditable } from "../PhaseOne/phaseOne.policy";
 import { BookingStatus, Prisma, UserRole, WeekDay } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
@@ -157,7 +158,9 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
       : payload.biography !== undefined && isQualificationsJson(payload.biography)
         ? payload.biography
         : undefined;
-  const updatedUser = await prisma.user.update({
+  const updatedUser = await prisma.$transaction(async tx => {
+    await assertProfileEditable(tx, userId, { ...payload, ...(qualificationsVal !== undefined ? { qualifications: qualificationsVal } : {}) });
+    return await tx.user.update({
     where: { id: userId },
     data: {
       ...(payload.fullName && { fullName: payload.fullName }),
@@ -243,6 +246,7 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
       },
     },
   });
+  }, { isolationLevel: 'Serializable' });
 
   if (payload.clinicId) {
     await requestJoinClinic(userId, {

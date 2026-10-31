@@ -1,3 +1,5 @@
+import { assertProfileEditable } from "../PhaseOne/phaseOne.policy";
+import { assertArrivalWindow } from "../PhaseOne/phaseOne.policy";
 import { Prisma, UserRole, BookingStatus, TopUpType, UserStatus } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
@@ -125,7 +127,9 @@ const updateClinicProfile = async (userId: string, payload: any) => {
   const { accessToken } = generateTokens(user, UserRole.CLINIC);
 
   // 2️⃣ Update user & upsert clinic
-  const updatedUser = await prisma.user.update({
+  const updatedUser = await prisma.$transaction(async tx => {
+    await assertProfileEditable(tx, userId, payload);
+    return await tx.user.update({
     where: { id: userId },
     data: {
       ...(payload.fullName && { fullName: payload.fullName }),
@@ -158,7 +162,7 @@ const updateClinicProfile = async (userId: string, payload: any) => {
             ...(payload.managerPhone && { managerPhone: payload.managerPhone }),
             ...(payload.logo && { logo: payload.logo }),
             ...(payload.clinicName && { clinicName: payload.clinicName }),
-            ...(payload.about && { about: payload.about }),
+              ...(payload.about !== undefined && { about: payload.about }),
             ...(payload.contactPhone && { contactPhone: payload.contactPhone }),
             ...(payload.location && { location: payload.location }),
             ...(payload.latitude !== undefined && { latitude: payload.latitude }),
@@ -199,6 +203,7 @@ const updateClinicProfile = async (userId: string, payload: any) => {
       },
     },
   });
+  }, { isolationLevel: 'Serializable' });
 
   if (payload.managerName && payload.managerPhone && updatedUser.clinic?.id) {
     await addClinicManager(
@@ -933,7 +938,7 @@ const handleUnifiedStatusChange = async (
     include: {
       patient: { select: { id: true, userId: true, user: true } },
       doctor: { select: { id: true, userId: true, user: true } },
-      clinic: { select: { id: true, userId: true, user: true, clinicName: true } },
+      clinic: { select: { id: true, userId: true, user: true, clinicName: true, timezone: true } },
     },
   });
 
@@ -1028,6 +1033,8 @@ const handleUnifiedStatusChange = async (
   } else if (status === BookingStatus.COMPLETE) {
     result = await BookingService.completeBooking(bookingId, userId, role);
   } else if (status === BookingStatus.ARRIVED) {
+    const settings = await prisma.platformBookingSetting.findFirst();
+    assertArrivalWindow(appointment, settings?.arrivalWindowHours ?? 3);
     const claimed = await prisma.bookingAppointment.updateMany({
       where: { id: bookingId, status: appointment.status },
       data: { status: BookingStatus.ARRIVED },
@@ -1079,6 +1086,7 @@ const handleUnifiedStatusChange = async (
       where: { id: bookingId, status: appointment.status },
       data: {
         status: BookingStatus.NOT_SHOW,
+        absenceType: "PATIENT_NO_SHOW",
         cancellationReason: noShowReasonText,
         ...({ noShowReason: noShowReasonText } as any),
       },
@@ -2332,14 +2340,14 @@ const executeDoctorAbsence = async (
   for (const booking of affectedBookings) {
     try {
       if (booking.status === BookingStatus.PENDING) {
-        await BookingService.rejectBooking(booking.id, absenceReason, "CLINIC", clinicUserId);
+        await BookingService.cancelBooking(booking.id, clinicUserId, "CLINIC", absenceReason, "DOCTOR_ABSENT");
         pendingRejected++;
         processedBookings.push({
           appointmentId: booking.id,
           serialNumber: booking.serialNumber,
           patientName: booking.patient?.user?.fullName || "Patient",
           previousStatus: BookingStatus.PENDING,
-          newStatus: BookingStatus.REJECTED,
+          newStatus: BookingStatus.CANCELLED,
           success: true,
         });
       } else if ([BookingStatus.CONFIRMED, BookingStatus.ARRIVED, BookingStatus.INPROGRESS].includes(booking.status as any)) {
@@ -2347,7 +2355,8 @@ const executeDoctorAbsence = async (
           booking.id,
           clinicUserId,
           "CLINIC",
-          absenceReason
+          absenceReason,
+          "DOCTOR_ABSENT"
         );
         confirmedCancelled++;
         processedBookings.push({

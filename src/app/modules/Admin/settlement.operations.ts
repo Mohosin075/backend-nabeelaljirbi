@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { randomUUID } from "crypto";
 import ApiError from "../../../errors/ApiErrors";
 import { money } from "../../../utils/money";
+import { bankDetails } from "../PhaseOne/phaseOne.policy";
 
 const openStatuses = ["PENDING", "UNDER_REVIEW", "APPROVED"];
 const allowedTransitions: Record<string, string[]> = {
@@ -26,20 +27,27 @@ export function settlementOperations(db: PrismaClient) {
   };
 
   const create = async (payload: any, actor: any) => {
-    if (!actor || !["ADMIN", "CLINIC"].includes(actor.role)) {
+    // Client requirement reaffirmed by the user: doctors may REQUEST withdrawal
+    // only when remote consultations are enabled. The DB flag defaults false;
+    // this does not enable any doctor or perform an outgoing payment.
+    if (!actor || !["ADMIN", "CLINIC", "DOCTOR"].includes(actor.role)) {
       throw new ApiError(403, "Settlement requests are available to clinics; doctor payouts require remote consultations");
     }
     const amount = money(payload.amount, false);
+    if (actor.role === "ADMIN" && !["SUPER_ADMIN", "FINANCE"].includes(actor.adminTier)) throw new ApiError(403, "Finance authorization required");
     return transaction(async tx => {
       let clinicId = payload.clinicId || null;
       let doctorId = payload.doctorId || null;
       if (actor.role !== "ADMIN") {
-        const clinic = actor.role === "MANAGER"
-          ? await tx.clinic.findFirst({ where: { manager: { some: { userId: actor.id } } } })
-          : await tx.clinic.findUnique({ where: { userId: actor.id } });
-        if (!clinic) throw new ApiError(404, "Clinic profile not found");
-        clinicId = clinic.id;
-        doctorId = null;
+        if (actor.role === "DOCTOR") {
+          const doctor = await tx.doctor.findUnique({ where: { userId: actor.id }, include: { user: true } });
+          if (!doctor?.adminVerified || !doctor.user.remoteConsultationsEnabled) throw new ApiError(403, "Doctor withdrawal requests require approval and enabled remote consultations");
+          doctorId = doctor.id; clinicId = null;
+        } else {
+          const clinic = await tx.clinic.findUnique({ where: { userId: actor.id } });
+          if (!clinic) throw new ApiError(404, "Clinic profile not found");
+          clinicId = clinic.id; doctorId = null;
+        }
       }
       if (Boolean(clinicId) === Boolean(doctorId)) throw new ApiError(400, "Select exactly one clinic or doctor");
       const party = clinicId
@@ -52,11 +60,18 @@ export function settlementOperations(db: PrismaClient) {
       });
       const available = money(Math.max(0, party.user.wallet - party.user.frozenWallet - (pending._sum.amount || 0)));
       if (amount > available) throw new ApiError(400, `Requested amount exceeds available balance (${available.toFixed(2)})`);
+      const payoutMethod = payload.payoutMethod || "BANK";
+      if (!["BANK", "CASH"].includes(payoutMethod)) throw new ApiError(400, "Choose BANK or CASH payout");
+      // Tested bank validation; immutable copy ensures a later profile edit does
+      // not change an already submitted request's destination.
+      const snapshot = payoutMethod === "BANK" ? bankDetails(party.user.bankDetails) : null;
       const result = await tx.settlement.create({
         data: {
           settlementNumber: `SET-${randomUUID()}`,
           partyType: clinicId ? "CLINIC" : "DOCTOR",
           clinicId, doctorId, amount, status: "PENDING", notes: payload.notes || null,
+          payoutMethod, ...(snapshot ? { bankDetails: snapshot } : {}),
+          payoutCountry: party.user.country?.trim().toUpperCase() || null,
         },
         include: { clinic: true, doctor: true },
       });
@@ -69,7 +84,7 @@ export function settlementOperations(db: PrismaClient) {
   };
 
   const update = async (id: string, payload: any, actor: any) => {
-    if (actor?.role !== "ADMIN") throw new ApiError(403, "Only Main Admin finance can process settlements");
+    if (actor?.role !== "ADMIN" || !["SUPER_ADMIN", "FINANCE"].includes(actor.adminTier)) throw new ApiError(403, "Only Main Admin finance can process settlements");
     const status = payload.status === "PAID" ? "COMPLETED" : payload.status;
     if (typeof status !== "string" || !Object.prototype.hasOwnProperty.call(allowedTransitions, status)) throw new ApiError(400, "Invalid settlement status");
     return transaction(async tx => {

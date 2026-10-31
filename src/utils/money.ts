@@ -1,6 +1,10 @@
 import ApiError from "../errors/ApiErrors";
 import { Prisma } from "@prisma/client";
 
+export function bookingCurrencyCode(country?: string | null): string {
+  return ({ LIBYA: "LYD", TUNISIA: "TND", EGYPT: "EGP", ALGERIA: "DZD" } as Record<string, string>)[country?.trim().toUpperCase() || ""] || "";
+}
+
 /** Validate at the boundary; never silently turn invalid input into a zero payout. */
 export function money(value: unknown, allowZero = true): number {
   if ((typeof value !== "number" && typeof value !== "string") || (typeof value === "string" && !value.trim())) {

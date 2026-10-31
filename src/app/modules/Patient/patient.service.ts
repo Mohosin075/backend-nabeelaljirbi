@@ -1,3 +1,4 @@
+import { assertProfileEditable } from "../PhaseOne/phaseOne.policy";
 import { Prisma, UserRole, BookingStatus, UserStatus, Country } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
@@ -85,7 +86,9 @@ const updatePatientProfile = async (userId: string, payload: any) => {
 
   const { accessToken } = generateTokens(user, UserRole.PATIENT);
 
-  const updatedUser = await prisma.user.update({
+  const updatedUser = await prisma.$transaction(async tx => {
+    await assertProfileEditable(tx, userId, payload);
+    return await tx.user.update({
     where: { id: userId },
     data: {
       ...(payload.fullName && { fullName: payload.fullName }),
@@ -153,6 +156,7 @@ const updatePatientProfile = async (userId: string, payload: any) => {
       },
     },
   });
+  }, { isolationLevel: 'Serializable' });
 
   return updatedUser;
 };
@@ -1194,11 +1198,11 @@ const getDoctor = async (doctorId: string, requestedClinicId?: string) => {
     clinicName: publicClinic?.clinicName,
     clinicLogo: publicClinic?.logo,
     clinicCountry: publicClinic?.user.country,
-    clinicServiceFeePercentage: publicClinic?.serviceFeePercentage ?? 0,
+    clinicServiceFeePercentage: fixedFee?.modelBPercentage ?? publicClinic?.serviceFeePercentage ?? 0,
     clinicCollectionMode: publicClinic?.collectionMode ?? "MODE_A",
     fixedPatientServiceFee: fixedFee ? money(fixedFee.amount) : null,
     patientServiceFeeAmount: publicClinic?.collectionMode === "MODE_B"
-      ? percentageAmount(doctorUser.doctor.consultFee || 0, publicClinic.serviceFeePercentage)
+      ? percentageAmount(doctorUser.doctor.consultFee || 0, fixedFee?.modelBPercentage ?? publicClinic.serviceFeePercentage)
       : fixedFee ? money(fixedFee.amount) : null,
     clinicPhoto: publicClinic?.galleries ?? [],
     views: publicClinic?.views,
@@ -1289,6 +1293,7 @@ const getAppointmentHistory = async (
       cancellationReason: true,
       rejectionReason: true,
       noShowReason: true,
+      absenceType: true,
       doctor: {
         select: {
           speciality: true,

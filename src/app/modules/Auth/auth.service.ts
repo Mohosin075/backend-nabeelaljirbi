@@ -284,7 +284,7 @@ const adminLogin = async (payload: { email: string; password: string }) => {
 
   const user = await prisma.user.findFirst({
     where: {
-      role: { in: ['ADMIN', 'CLINIC', 'MANAGER'] },
+      role: { in: ['ADMIN', 'CLINIC', 'MANAGER', 'DOCTOR'] },
       email: {
         equals: cleanEmail,
         mode: 'insensitive',
@@ -343,7 +343,7 @@ const forgotPassword = async (payload: { emailOrPhone: string }) => {
 
   const user = await prisma.user.findFirst({
     where: {
-      role: { in: ['ADMIN', 'CLINIC', 'MANAGER'] },
+      role: { in: ['ADMIN', 'CLINIC', 'MANAGER', 'DOCTOR'] },
       OR: [
         { email: { equals: cleanInput, mode: 'insensitive' } },
         { phoneNumber: cleanInput },

@@ -1,3 +1,4 @@
+import { assertProfileEditable } from "../PhaseOne/phaseOne.policy";
 import { UserRole, UserStatus } from "@prisma/client";
 import httpStatus from "http-status";
 import { Secret } from "jsonwebtoken";
@@ -167,7 +168,9 @@ const updateUser = async (payload: Partial<TUser>, userId: string) => {
     throw new ApiError(httpStatus.BAD_REQUEST, "User ID is required");
   }
 
-  const updateUser = await prisma.user.update({
+  const updateUser = await prisma.$transaction(async tx => {
+    await assertProfileEditable(tx, userId, payload);
+    return await tx.user.update({
     where: { id: userId },
     data: {
       // Self-service profile editing must never accept wallet, role, tokens or
@@ -176,6 +179,7 @@ const updateUser = async (payload: Partial<TUser>, userId: string) => {
         ["fullName", "phoneNumber", "dateOfBirth", "address", "email", "gender", "country", "city", "profileImage", "fcmToken"].includes(key))),
     },
   });
+  }, { isolationLevel: 'Serializable' });
 
   if (!updateUser) {
     throw new ApiError(httpStatus.NOT_FOUND, "User not found");

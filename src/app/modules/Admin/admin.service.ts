@@ -1444,6 +1444,9 @@ const getBookingSettings = async () => {
 };
 
 const updateBookingSettings = async (payload: any, currentAdmin?: any) => {
+  for (const [key, min, max] of [["arrivalWindowHours", 0, 72], ["advanceBookingDays", 1, 365], ["cancellationCutoffHours", 0, 168], ["autoRejectTimeoutMinutes", 1, 1440], ["neglectedResolutionHours", 1, 168]] as const) {
+    if (payload[key] !== undefined && (!Number.isInteger(Number(payload[key])) || Number(payload[key]) < min || Number(payload[key]) > max)) throw new ApiError(400, `Invalid ${key}: expected ${min}–${max}`);
+  }
   const current = await getBookingSettings();
   const updated = await prisma.platformBookingSetting.update({
     where: { id: current.id },
@@ -1454,6 +1457,7 @@ const updateBookingSettings = async (payload: any, currentAdmin?: any) => {
       reminder3hEnabled: payload.reminder3hEnabled !== undefined ? Boolean(payload.reminder3hEnabled) : current.reminder3hEnabled,
       neglectedResolutionHours: payload.neglectedResolutionHours !== undefined ? Number(payload.neglectedResolutionHours) : current.neglectedResolutionHours,
       autoRejectTimeoutMinutes: payload.autoRejectTimeoutMinutes !== undefined ? Number(payload.autoRejectTimeoutMinutes) : current.autoRejectTimeoutMinutes,
+      arrivalWindowHours: payload.arrivalWindowHours !== undefined ? Number(payload.arrivalWindowHours) : current.arrivalWindowHours,
     },
   });
 

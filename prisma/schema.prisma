@@ -99,6 +99,10 @@ model User {
   passwordResetToken   String?
   passwordResetExpires DateTime?
   profileCompleted Boolean   @default(false)
+  profileApproved  Boolean   @default(false)
+  remoteConsultationsEnabled Boolean @default(false)
+  bankDetails Json?
+  profileChangeRequests ProfileChangeRequest[]
   banned           Boolean   @default(false)
   serviceFree      Float     @default(0)
 
@@ -518,6 +522,8 @@ model BookingAppointment {
   cancelledBy                String?
   cancellationReason         String?
   noShowReason               String?  // Reason stays visible to patient (Section 5)
+  absenceType                String?
+  feeCountry                 String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -832,6 +838,8 @@ model PatientServiceFee {
 
   amount  Float
   country Country @unique
+  modelBPercentage Float?
+  clinicFeePercentage Float?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -966,6 +974,9 @@ model Settlement {
   status              String    @default("PENDING") // PENDING, UNDER_REVIEW, APPROVED, REJECTED, COMPLETED
   reference           String?
   receiptUrl          String?
+  payoutMethod        String?
+  payoutCountry       String?
+  bankDetails         Json?
   notes               String?
   requestedAt         DateTime  @default(now())
   processedAt         DateTime?
@@ -1023,8 +1034,24 @@ model PlatformBookingSetting {
   reminder3hEnabled        Boolean  @default(true)
   neglectedResolutionHours Int      @default(12)
   autoRejectTimeoutMinutes Int      @default(30)
+  arrivalWindowHours       Int      @default(3)
   createdAt                DateTime @default(now())
   updatedAt                DateTime @updatedAt
 
   @@map("platform_booking_settings")
+}
+
+model ProfileChangeRequest {
+  id String @id @default(cuid())
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  changes Json
+  status String @default("PENDING")
+  reason String?
+  adminResponse String?
+  reviewedBy String?
+  reviewedAt DateTime?
+  createdAt DateTime @default(now())
+  @@index([userId, status])
+  @@map("profile_change_requests")
 }

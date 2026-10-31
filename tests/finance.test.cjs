@@ -41,6 +41,7 @@ function fixture() {
   const db = { $transaction: async (operation) => {
     const draft = structuredClone(state);
     const tx = {
+      doctor: { findUnique: async () => null },
       settlement: {
         findUnique: async () => draft.settlement,
         findUniqueOrThrow: async () => draft.settlement,

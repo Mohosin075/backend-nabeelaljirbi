@@ -9,7 +9,8 @@ import { broadcastBookingUpdate } from "../../../helpars/socket/socketHandler";
 import { Notification } from "../Notification/notification.service";
 import { NotificationTemplateService } from "../NotificationTemplate/notificationTemplate.service";
 import { checkCancellationAllowed, getAppointmentStartUTC } from "../../../utils/timezoneHelper";
-import { calculateBookingFees } from "../../../utils/money";
+import { calculateBookingFees, bookingCurrencyCode } from "../../../utils/money";
+import { assertArrivalWindow } from "../PhaseOne/phaseOne.policy";
 
 type BookingActorRole = "PATIENT" | "DOCTOR" | "CLINIC" | "MANAGER" | "ADMIN" | "SYSTEM";
 
@@ -285,8 +286,8 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
     consultFee: doctor.consultFee || 0,
     collectionMode: clinic.collectionMode || "MODE_A",
     fixedPatientFee: countryFee?.amount,
-    patientPercentage: clinic.serviceFeePercentage ?? 10,
-    clinicPercentage: clinic.trial ? 0 : clinic.user.serviceFree,
+    patientPercentage: countryFee?.modelBPercentage ?? clinic.serviceFeePercentage ?? 10,
+    clinicPercentage: clinic.trial ? 0 : countryFee?.clinicFeePercentage ?? clinic.user.serviceFree,
   });
 
   // 8. Patient wallet validation (Available balance = wallet - frozenWallet)
@@ -297,9 +298,9 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
   if (availableWallet < holdAmount) {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
-      `Insufficient wallet balance. Required hold: ${holdAmount} LYD, Available balance: ${availableWallet.toFixed(
+      `Insufficient wallet balance. Required hold: ${holdAmount} ${bookingCurrencyCode(clinicCountry)}, Available balance: ${availableWallet.toFixed(
         2
-      )} LYD`
+      )} ${bookingCurrencyCode(clinicCountry)}`
     );
   }
 
@@ -442,6 +443,7 @@ const createBooking = async (userId: string, payload: CreateBookingPayload) => {
         status: BookingStatus.PENDING,
         holdAmount,
         collectionMode,
+        feeCountry: clinicCountry,
         consultFee,
         serviceFeePercentage,
         serviceFeeAmount,
@@ -928,7 +930,7 @@ const markPatientArrived = async (appointmentId: string, patientUserId: string) 
     where: { id: appointmentId },
     include: {
       patient: { select: { userId: true } },
-      clinic: { select: { userId: true } },
+      clinic: { select: { userId: true, timezone: true } },
       doctor: { select: { userId: true } },
     },
   });
@@ -938,6 +940,8 @@ const markPatientArrived = async (appointmentId: string, patientUserId: string) 
   }
 
   await assertBookingActor(appointment, patientUserId, "PATIENT", ["PATIENT"]);
+  const arrivalSettings = await prisma.platformBookingSetting.findFirst();
+  assertArrivalWindow(appointment, arrivalSettings?.arrivalWindowHours ?? 3);
   if (appointment.status !== BookingStatus.CONFIRMED) {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
@@ -983,6 +987,8 @@ const rejectBooking = async (
   reason?: string,
   cancelledBy: string = "CLINIC",
   callerUserId?: string,
+  absenceType?: string,
+  asCancellation = false,
 ) => {
   const appointment = await prisma.bookingAppointment.findUnique({
     where: { id: appointmentId },
@@ -1014,11 +1020,11 @@ const rejectBooking = async (
   const patientUserId = appointment.patient.userId;
   const holdAmount = appointment.holdAmount || 0;
   const newStatus =
-    cancelledBy === "PATIENT"
+    cancelledBy === "PATIENT" || asCancellation
       ? BookingStatus.CANCELLED
       : BookingStatus.REJECTED;
   const defaultReason =
-    cancelledBy === "PATIENT"
+    cancelledBy === "PATIENT" || asCancellation
       ? "Cancelled by patient"
       : "Clinic rejected booking request";
   const reasonText = reason?.trim() || defaultReason;
@@ -1028,15 +1034,15 @@ const rejectBooking = async (
   const isEn = userLang === "en";
 
   const eventKey =
-    cancelledBy === "PATIENT" ? "BOOKING_CANCELLED" : "BOOKING_REJECTED";
+    cancelledBy === "PATIENT" || asCancellation ? "BOOKING_CANCELLED" : "BOOKING_REJECTED";
   const notifType =
-    cancelledBy === "PATIENT"
+    cancelledBy === "PATIENT" || asCancellation
       ? "APPOINTMENT_CANCELLED"
       : "APPOINTMENT_REJECTED";
 
   const refundNotice = isEn
-    ? `Any frozen amount of ${holdAmount} LYD has been completely released back to your wallet.`
-    : `تم تحرير المبلغ المحجوز وقدره ${holdAmount} دينار ليبي بالكامل وإعادته إلى محفظتك.`;
+    ? `Any frozen amount of ${holdAmount} ${bookingCurrencyCode(appointment.feeCountry)} has been completely released back to your wallet.`
+    : `تم تحرير المبلغ المحجوز وقدره ${holdAmount} ${bookingCurrencyCode(appointment.feeCountry)} بالكامل وإعادته إلى محفظتك.`;
 
   const rendered = await NotificationTemplateService.renderNotification(
     eventKey,
@@ -1086,6 +1092,7 @@ const rejectBooking = async (
         rejectionReason: reasonText,
         cancelledBy,
         cancellationReason: reasonText,
+        ...(absenceType ? { absenceType } : {}),
       },
     });
     if (claimed.count !== 1) {
@@ -1122,6 +1129,7 @@ const rejectBooking = async (
     broadcastBookingUpdate({
       bookingId: appointment.id,
       status: newStatus,
+      absenceType: absenceType || null,
       clinicId: appointment.clinicId,
       doctorId: appointment.doctorId,
       patientId: appointment.patientId,
@@ -1321,7 +1329,8 @@ const cancelBooking = async (
   appointmentId: string,
   callerUserId?: string,
   callerRole?: string,
-  reason?: string
+  reason?: string,
+  absenceType?: string,
 ) => {
   const booking = await prisma.bookingAppointment.findUnique({
     where: { id: appointmentId },
@@ -1337,6 +1346,7 @@ const cancelBooking = async (
   }
 
   await assertBookingActor(booking, callerUserId, callerRole, ["PATIENT", "DOCTOR", "CLINIC", "MANAGER", "ADMIN"]);
+  if (absenceType && (absenceType !== "DOCTOR_ABSENT" || callerRole === "PATIENT")) throw new ApiError(403, "Only authorized clinic staff or doctors can record doctor absence");
 
   if (
     booking.status === BookingStatus.CANCELLED ||
@@ -1371,6 +1381,8 @@ const cancelBooking = async (
       cancelReason,
       callerRole || cancelledBy,
       callerUserId,
+      absenceType,
+      true,
     );
   }
 
@@ -1432,10 +1444,10 @@ const cancelBooking = async (
 
     const refundNotice = isEn
       ? totalRefundToPatient > 0
-        ? `A consultation refund of ${totalRefundToPatient} LYD has been credited to your wallet. The captured service fee is non-refundable.`
+        ? `A consultation refund of ${totalRefundToPatient} ${bookingCurrencyCode(booking.feeCountry)} has been credited to your wallet. The captured service fee is non-refundable.`
         : "The service fee was captured when the booking was confirmed and is non-refundable."
       : totalRefundToPatient > 0
-        ? `تم إيداع مبلغ استرداد الاستشارة بقيمة ${totalRefundToPatient} دينار ليبي في محفظتك. رسوم الخدمة غير قابلة للاسترداد.`
+        ? `تم إيداع مبلغ استرداد الاستشارة بقيمة ${totalRefundToPatient} ${bookingCurrencyCode(booking.feeCountry)} في محفظتك. رسوم الخدمة غير قابلة للاسترداد.`
         : "تم تحصيل رسوم الخدمة عند تأكيد الحجز وهي غير قابلة للاسترداد.";
 
     const rendered = await NotificationTemplateService.renderNotification(
@@ -1503,6 +1515,7 @@ const cancelBooking = async (
           status: BookingStatus.CANCELLED,
           cancelledBy,
           cancellationReason: cancelReasonText,
+          ...(absenceType ? { absenceType } : {}),
           refundPatient: true,
           returnPatientBalance: true,
         },
@@ -1574,6 +1587,7 @@ const cancelBooking = async (
         patientUserId: patientUserId,
         clinicUserId: clinicUserId,
         reason: cancelReasonText,
+        absenceType: updatedBooking.absenceType,
         serialNumber: booking.serialNumber,
         consultDate: booking.consultDate,
       });

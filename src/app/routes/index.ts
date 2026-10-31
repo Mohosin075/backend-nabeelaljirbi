@@ -1,4 +1,11 @@
 import express from "express";
+import { ProfileRoutes } from "../modules/PhaseOne/profile.routes";
+import { AccountRoutes } from "../modules/PhaseOne/account.routes";
+import { PayoutRoutes } from "../modules/PhaseOne/payout.routes";
+import { ManagedBookingRoutes } from "../modules/PhaseOne/booking.routes";
+import { CountrySettingRoutes } from "../modules/PhaseOne/settings.routes";
+import { HistoryRoutes } from "../modules/PhaseOne/history.routes";
+import { ReportRoutes } from "../modules/PhaseOne/report.routes";
 
 import { AuthRoutes } from "../modules/Auth/auth.routes";
 import { UserRoutes } from "../modules/User/user.routes";
@@ -30,6 +37,13 @@ import { NotificationTemplateRoutes } from "../modules/NotificationTemplate/noti
 const router = express.Router();
 
 const moduleRoutes = [
+  { path: "/phase-one", route: ProfileRoutes },
+  { path: "/phase-one", route: AccountRoutes },
+  { path: "/phase-one", route: PayoutRoutes },
+  { path: "/phase-one", route: ManagedBookingRoutes },
+  { path: "/phase-one", route: CountrySettingRoutes },
+  { path: "/phase-one", route: HistoryRoutes },
+  { path: "/phase-one", route: ReportRoutes },
   {
     path: "/auth",
     route: AuthRoutes,

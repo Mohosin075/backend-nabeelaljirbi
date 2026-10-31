@@ -1,0 +1,56 @@
+const { test, after } = require('node:test');
+const assert = require('node:assert/strict');
+const { PrismaClient } = require('@prisma/client');
+const { adminOperations } = require('../src/app/modules/PhaseOne/admin.operations');
+const { phaseOneOperations } = require('../src/app/modules/PhaseOne/phaseOne.operations');
+const { settlementOperations } = require('../src/app/modules/Admin/settlement.operations');
+const db = new PrismaClient({ datasources: { db: { url: require('./phase-one-test-db.cjs').testUrl } } });
+const admin = { id: 'phase1-admin', role: 'ADMIN', adminTier: 'SUPER_ADMIN' };
+const clinic = { id: 'phase1-clinic-user', role: 'CLINIC' };
+const ops = adminOperations(db), profiles = phaseOneOperations(db), payouts = settlementOperations(db);
+after(() => db.$disconnect());
+test('phone correction requires an explicit clinic and authorized operations admin', async () => {
+  await assert.rejects(ops.clinicPhone(admin, { field: 'login', phoneNumber: '+218900000099' }), /Select a clinic/);
+  await assert.rejects(ops.clinicPhone(clinic, { clinicId: 'phase1-clinic', field: 'login', phoneNumber: '+218900000099' }), /permission/);
+  const old = await db.clinic.findUnique({ where: { id: 'phase1-clinic' } });
+  await ops.clinicPhone(admin, { clinicId: old.id, field: 'contact', phoneNumber: '+218900000099' });
+  assert.equal((await db.clinic.findUnique({ where: { id: old.id } })).contactPhone, '+218900000099');
+  await db.clinic.update({ where: { id: old.id }, data: { contactPhone: old.contactPhone } });
+});
+test('receptionists have no money permissions and cannot be managed across clinics', async () => {
+  const stamp = Date.now();
+  const staff = await ops.createStaff(clinic, { fullName: 'Synthetic Receptionist', phoneNumber: `+218${stamp}`, email: `test${stamp}@example.test`, password: 'Synthetic-test-123' });
+  assert.equal(staff.role, 'MANAGER'); assert.equal(staff.password, undefined);
+  assert.ok((await ops.listStaff(clinic)).some(row => row.user.id === staff.id));
+  await assert.rejects(ops.staffStatus({ id: 'phase1-other-clinic-user', role: 'CLINIC' }, staff.id, { status: 'SUSPENDED' }), /does not belong/);
+  await assert.rejects(profiles.saveBank(staff.id, {}), /clinic owners/);
+  await assert.rejects(payouts.create({ amount: 1, payoutMethod: 'CASH' }, { id: staff.id, role: 'MANAGER' }), /remote consultations/);
+  await ops.staffStatus(clinic, staff.id, { status: 'SUSPENDED' });
+  assert.equal((await db.user.findUnique({ where: { id: staff.id } })).status, 'SUSPENDED');
+});
+test('doctor withdrawal eligibility defaults off and only Main Admin can enable it', async () => {
+  await db.user.update({ where: { id: 'phase1-doctor-user' }, data: { remoteConsultationsEnabled: false } });
+  const doctor = { id: 'phase1-doctor-user', role: 'DOCTOR' };
+  await assert.rejects(payouts.create({ amount: 1, payoutMethod: 'CASH' }, doctor), /enabled remote/);
+  await assert.rejects(ops.controls({ ...admin, adminTier: 'OPERATIONS' }, doctor.id, { remoteConsultationsEnabled: true }), /permission/);
+  await ops.controls(admin, doctor.id, { remoteConsultationsEnabled: true });
+  const before = (await db.user.findUnique({ where: { id: doctor.id } })).wallet;
+  const request = await payouts.create({ amount: 1, payoutMethod: 'CASH' }, doctor);
+  assert.equal(request.status, 'PENDING'); assert.equal(request.doctorId, 'phase1-doctor');
+  assert.equal((await db.user.findUnique({ where: { id: doctor.id } })).wallet, before);
+  await assert.rejects(payouts.update(request.id, { status: 'APPROVED' }, { ...admin, adminTier: 'OPERATIONS' }), /finance/);
+  await payouts.update(request.id, { status: 'REJECTED' }, admin);
+  await ops.controls(admin, doctor.id, { remoteConsultationsEnabled: false });
+});
+test('bank payout snapshots survive profile edits; no funds move on request or rejection', async () => {
+  const before = (await db.user.findUnique({ where: { id: clinic.id } })).wallet;
+  const bank = { iban: 'SYNTHETIC-ORIGINAL', accountNumber: '', beneficiaryName: 'Synthetic Owner', bankName: 'Test Bank' };
+  await profiles.saveBank(clinic.id, bank);
+  const request = await payouts.create({ amount: 2, payoutMethod: 'BANK', doctorId: 'phase1-doctor' }, clinic);
+  await profiles.saveBank(clinic.id, { ...bank, iban: 'SYNTHETIC-NEW' });
+  assert.equal(request.clinicId, 'phase1-clinic'); assert.equal(request.doctorId, null);
+  assert.equal(request.payoutCountry, 'LIBYA');
+  assert.equal((await db.settlement.findUnique({ where: { id: request.id } })).bankDetails.iban, bank.iban);
+  await payouts.update(request.id, { status: 'REJECTED' }, admin);
+  assert.equal((await db.user.findUnique({ where: { id: clinic.id } })).wallet, before);
+});
