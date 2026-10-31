@@ -32,6 +32,13 @@ before(async () => {
   admin = await db.user.findUnique({ where: { id: 'phase1-admin' } });
 });
 after(() => db.$disconnect());
+test('Requests uses oldest request first while Newest uses newest record first', async () => {
+  const ids = [];
+  for (const [day, serial] of [['2026-09-01', 101], ['2026-09-02', 102]]) ids.push((await db.bookingAppointment.create({ data: { patientId: patient.patient.id, doctorId: doctor.id, clinicId: clinic.id, consultDate: new Date('2030-01-01T00:00:00Z'), serialNumber: serial, status: 'CANCELLED', createdAt: new Date(day) } })).id);
+  const actor = { id: owner.id, role: 'CLINIC' };
+  assert.deepEqual((await ops.list(actor, { date: '2030-01-01', sort: 'requests' })).data.map(r => r.id), ids);
+  assert.deepEqual((await ops.list(actor, { date: '2030-01-01', sort: 'newest' })).data.map(r => r.id), [...ids].reverse());
+});
 async function pending(mode, date = new Date(Date.now() + 86400000)) {
   const hold = mode === 'MODE_B' ? 83.05 : 7.55;
   return db.$transaction(async tx => {
@@ -78,6 +85,17 @@ test('bulk actions reject cross-clinic selection before any change; too-early ar
 test('legacy biography qualification alias cannot bypass an approved doctor profile lock', async () => {
   await assert.rejects(DoctorService.updateDoctorProfile('phase1-doctor-user', { biography: '[{"degree":"Unreviewed"}]' }), /locked/);
   assert.equal((await db.doctor.findUnique({ where: { id: doctor.id } })).qualifications, doctor.qualifications);
+});
+test('approved doctor and clinic can edit public descriptions without changing core approval or money', async () => {
+  const doctorBefore = await db.user.findUnique({ where: { id: 'phase1-doctor-user' } });
+  await DoctorService.updateDoctorProfile('phase1-doctor-user', { about: 'Updated public description' });
+  assert.equal((await db.doctor.findUnique({ where: { id: doctor.id } })).about, 'Updated public description');
+  assert.equal((await db.doctor.findUnique({ where: { id: doctor.id } })).adminVerified, true);
+  assert.equal((await db.user.findUnique({ where: { id: doctorBefore.id } })).wallet, doctorBefore.wallet);
+  await ClinicService.updateClinicProfile(owner.id, { about: 'Public clinic description' });
+  await ClinicService.updateClinicProfile(owner.id, { about: '' });
+  const saved = await db.clinic.findUnique({ where: { id: clinic.id } });
+  assert.equal(saved.about, ''); assert.equal(saved.adminVerified, true); assert.equal(saved.clinicName, clinic.clinicName);
 });
 test('manual bulk confirm, arrive and complete work for both models without charging again on completion', async () => {
   const bookings = [await pending('MODE_A', new Date(Date.now() - 86400000)), await pending('MODE_B', new Date(Date.now() - 86400000))];

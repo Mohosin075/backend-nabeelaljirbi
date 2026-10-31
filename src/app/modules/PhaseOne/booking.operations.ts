@@ -19,7 +19,7 @@ export function bookingOperations(
         } as any
       )[query.sort] || "createdAt";
     const direction =
-      query.sort === "serial" || query.sort === "date" ? "asc" : "desc";
+      ["requests", "serial", "date"].includes(query.sort) ? "asc" : "desc";
     const where = {
       AND: [await bookingScope(db, actor), bookingFilters(query)],
     };

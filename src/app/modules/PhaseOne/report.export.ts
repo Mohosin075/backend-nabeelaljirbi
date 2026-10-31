@@ -15,7 +15,20 @@ export async function excelReport(table: ReportTable) {
   sheet.addRow([table.title]);
   sheet.addRow([table.filters]);
   sheet.addRow(table.columns);
-  table.rows.forEach((row) => sheet.addRow(row));
+  table.rows.forEach((row) => {
+    const added = sheet.addRow(row);
+    row.forEach((value, index) => {
+      if (
+        table.columns[index] === "Receipt" &&
+        typeof value === "string" &&
+        /^https?:\/\//i.test(value)
+      )
+        added.getCell(index + 1).value = {
+          text: "View receipt",
+          hyperlink: value,
+        };
+    });
+  });
   sheet.getRow(3).font = { bold: true };
   sheet.views = [{ state: "frozen", ySplit: 3 }];
   sheet.autoFilter = {
@@ -82,8 +95,14 @@ export function pdfReport(table: ReportTable): Promise<Buffer> {
         .fillColor("#425466")
         .text("No records match these filters.", 32, y + 20);
     table.rows.forEach((row, index) => {
-      const values = row.map((value) =>
-        typeof value === "number" ? value.toFixed(2) : String(value),
+      const values = row.map((value, index) =>
+        table.columns[index] === "Receipt" &&
+        typeof value === "string" &&
+        /^https?:\/\//i.test(value)
+          ? "View receipt"
+          : typeof value === "number"
+            ? value.toFixed(2)
+            : String(value),
       );
       const height = Math.min(
         76,
@@ -129,12 +148,10 @@ export function pdfReport(table: ReportTable): Promise<Buffer> {
               line += 14;
             }
             if (line + 12 > y + height) break;
-            doc
-              .fillColor("#172b3a")
-              .text(text, pen - runWidth, line, {
-                lineBreak: false,
-                features: [],
-              });
+            doc.fillColor("#172b3a").text(text, pen - runWidth, line, {
+              lineBreak: false,
+              features: [],
+            });
             pen -= runWidth;
           }
           return;
@@ -151,6 +168,11 @@ export function pdfReport(table: ReportTable): Promise<Buffer> {
             ellipsis: true,
             align: arabic ? "right" : "left",
             ...(arabic ? { features: [] } : {}),
+            ...(table.columns[i] === "Receipt" &&
+            typeof row[i] === "string" &&
+            /^https?:\/\//i.test(String(row[i]))
+              ? { link: String(row[i]), underline: true }
+              : {}),
           });
       });
       y += height;

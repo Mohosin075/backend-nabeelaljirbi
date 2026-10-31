@@ -40,3 +40,39 @@ test('PDF download is a valid scoped document and patient complaint output exclu
   const response = await (await request('/my-complaints', 'phase1-patient-user')).json();
   assert.ok(response.data.data.length); assert.ok(response.data.data.every(c => !Object.hasOwn(c, 'adminNotes')));
 });
+
+test('payout and wallet exports retain receipt hyperlinks, reference and recipient scope', async () => {
+  for (const kind of ['payouts', 'wallet']) {
+    const response = await request(`/reports/${kind}/xlsx?searchTerm=SYNTHETIC-CASH&limit=1`);
+    assert.equal(response.status, 200);
+    const book = new ExcelJS.Workbook(); await book.xlsx.load(Buffer.from(await response.arrayBuffer()));
+    const sheet = book.worksheets[0];
+    assert.ok(sheet.rowCount >= 4);
+    for (let row = 4; row <= sheet.rowCount; row++) {
+      assert.equal(sheet.getRow(row).getCell(7).text, 'SYNTHETIC-CASH');
+      assert.equal(sheet.getRow(row).getCell(8).value.hyperlink, 'https://example.test/cash-receipt.pdf');
+    }
+    const other = await request(`/reports/${kind}/xlsx?searchTerm=SYNTHETIC-CASH`, 'phase1-other-clinic-user');
+    const hidden = new ExcelJS.Workbook(); await hidden.xlsx.load(Buffer.from(await other.arrayBuffer()));
+    assert.equal(hidden.worksheets[0].rowCount, 3);
+    const pdf = await request(`/reports/${kind}/pdf?searchTerm=SYNTHETIC-CASH`);
+    assert.equal(pdf.status, 200);
+    const bytes = Buffer.from(await pdf.arrayBuffer());
+    assert.match(bytes.toString('latin1'), /https:\/\/example.test\/cash-receipt.pdf/);
+    require('node:fs').mkdirSync('tmp/followup-reports', {recursive:true});
+    require('node:fs').writeFileSync(`tmp/followup-reports/${kind}.pdf`, bytes);
+  }
+  assert.equal((await request('/reports/payouts/xlsx', 'phase1-patient-user')).status, 403);
+});
+
+test('legacy admin complaint search uses phone and inclusive dates', async () => {
+  const complaint = await db.complaint.findFirst({include:{complainant:true}});
+  assert.ok(complaint);
+  const date = complaint.createdAt.toISOString().slice(0,10);
+  const query = new URLSearchParams({searchTerm:complaint.complainant.phoneNumber,startDate:date,endDate:date,limit:'1000'});
+  const response = await fetch(base.replace('/phase-one','/admin') + '/complaints?' + query, {headers:{Authorization:'Bearer phase1-admin'}});
+  assert.equal(response.status,200);
+  const body = await response.json();
+  assert.ok(body.data.data.some(c => c.id === complaint.id));
+  assert.ok(body.data.data.every(c => c.complainant.phoneNumber.includes(complaint.complainant.phoneNumber)));
+});

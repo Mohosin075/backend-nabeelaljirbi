@@ -15,6 +15,7 @@ Module._load = function(request, parent, main) {
     } catch (e) { next(e); }
   } };
   if (request.endsWith('/bookingScheduler.service')) return { BookingSchedulerService: noop };
+  if (request.endsWith('/jobs')) return { adminNotificationQueue: noop };
   if (request.endsWith('/notification.service')) return { Notification: noop };
   if (request.endsWith('/notificationTemplate.service')) return { NotificationTemplateService: { renderNotification: async () => ({ title: 'Synthetic update', body: 'Test booking update', pushEnabled: false }) } };
   if (request.endsWith('/socketHandler')) return { broadcastBookingUpdate() {} };
@@ -22,10 +23,29 @@ Module._load = function(request, parent, main) {
   return originalLoad.call(this, request, parent, main);
 };
 const routers = ['profile.routes', 'account.routes', 'payout.routes', 'booking.routes', 'settings.routes', 'history.routes', 'report.routes'].map(file => Object.values(require(`../src/app/modules/PhaseOne/${file}`)).find(value => typeof value === 'function' && value.stack));
+const { AdminController } = require('../src/app/modules/Admin/admin.controller');
+const testAuth = Module._load('../middlewares/auth').default();
 Module._load = originalLoad;
 function createTestApp() {
   const app = express(); app.use(require('cors')()); app.use(express.json());
   for (const router of routers) app.use('/api/v1/phase-one', router);
+  // Local synthetic accounts only. Exercise the real legacy read services too.
+  const reads = {
+    settlements: AdminController.getSettlements,
+    complaints: AdminController.getComplaints,
+    'get-clinic': AdminController.getClinics,
+    'get-doctor': AdminController.getDoctors,
+    'get-patient': AdminController.getPatients,
+    'financial-overview': AdminController.getPlatformFinancialOverview,
+    'financial-ledger': AdminController.getFinancialLedger,
+    stats: AdminController.AdminStats,
+  };
+  for (const [path, read] of Object.entries(reads)) app.get('/api/v1/admin/' + path, testAuth, async (req, res, next) => {
+    try {
+      if (req.user.role !== 'ADMIN') return res.status(403).json({ success: false, message: 'Admin required' });
+      return read(req, res, next);
+    } catch (e) { next(e); }
+  });
   app.use((err, req, res, next) => { res.status(err.statusCode || 500).json({ success: false, message: err.message }); });
   return app;
 }

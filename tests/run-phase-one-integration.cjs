@@ -8,7 +8,7 @@ const container = 'salama-phase1-check-20261031-a7f2';
 let createdContainer = false;
 const existing = spawnSync('docker', ['inspect', container], { encoding: 'utf8' });
 if (existing.status !== 0) {
-  if (!String(existing.stderr).includes('No such object')) throw Error(existing.stderr || 'Docker is unavailable');
+  if (!/no such object/i.test(String(existing.stderr))) throw Error(existing.stderr || 'Docker is unavailable');
   execFileSync('docker', ['run', '--rm', '-d', '--name', container, '--label', 'salama.codex.phase1=20261031-a7f2', '-e', 'POSTGRES_PASSWORD=salama-local-test', '-p', '127.0.0.1:55439:5432', 'postgres:16-alpine'], { stdio: 'pipe' });
   createdContainer = true;
 }
@@ -17,7 +17,7 @@ assert.equal(inspect.Config.Labels['salama.codex.phase1'], '20261031-a7f2');
 assert.equal(inspect.State.Running, true);
 let ready = false;
 for (let attempt = 0; attempt < 40; attempt++) {
-  if (spawnSync('docker', ['exec', container, 'pg_isready', '-U', 'postgres'], { stdio: 'ignore' }).status === 0) { ready = true; break; }
+  if (spawnSync('docker', ['exec', container, 'pg_isready', '-h', '127.0.0.1', '-U', 'postgres'], { stdio: 'ignore' }).status === 0) { ready = true; break; }
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
 }
 assert.equal(ready, true, 'Disposable PostgreSQL did not become ready');

@@ -24,6 +24,6 @@ router.get(
 );
 router.get(
   "/overview",
-  run((req) => operations.overview(req.user)),
+  run((req) => operations.overview(req.user, req.query)),
 );
 export const HistoryRoutes = router;

@@ -395,7 +395,7 @@ const getFinancialLedger = catchAsync(async (req: Request, res: Response) => {
 // Section 9: Settlements
 const getSettlements = catchAsync(async (req: Request, res: Response) => {
   const options = pick(req.query, paginationFields);
-  const filters = pick(req.query, ["searchTerm", "status", "partyType", "clinicId", "doctorId"]);
+  const filters = pick(req.query, ["searchTerm", "status", "partyType", "clinicId", "doctorId", "startDate", "endDate", "payoutMethod"]);
 
   const result = await AdminService.getSettlements(filters, options, (req as any).user);
 
@@ -437,7 +437,7 @@ const updateSettlementStatus = catchAsync(async (req: Request, res: Response) =>
 // Section 9: Complaints
 const getComplaints = catchAsync(async (req: Request, res: Response) => {
   const options = pick(req.query, paginationFields);
-  const filters = pick(req.query, ["searchTerm", "status", "targetType"]);
+  const filters = pick(req.query, ["searchTerm", "status", "targetType", "startDate", "endDate"]);
 
   const result = await AdminService.getComplaints(filters, options);
 

@@ -3,6 +3,7 @@ import ApiError from "../../../errors/ApiErrors";
 import { bookingFilters, pageOptions } from "./phaseOne.policy";
 import { requireAdmin } from "./phaseOne.access";
 import { bookingScope } from "./phaseOne.access";
+import { historyDateRange, payoutFilters } from "./finance.policy";
 
 export function historyOperations(db: PrismaClient) {
   const complaints = async (actor: any, query: any) => {
@@ -51,6 +52,28 @@ export function historyOperations(db: PrismaClient) {
       userId: actor.id,
       ...(date ? { createdAt: date } : {}),
     };
+    const search = String(query.searchTerm || "").trim();
+    if (search) {
+      const matches = await db.settlement.findMany({
+        where: {
+          AND: [
+            {
+              OR: [
+                { clinic: { userId: actor.id } },
+                { doctor: { userId: actor.id } },
+              ],
+            },
+            { reference: { contains: search, mode: "insensitive" } },
+          ],
+        },
+        select: { id: true },
+      });
+      where.OR = [
+        { id: { contains: search, mode: "insensitive" } },
+        { appointmentId: { contains: search } },
+        { id: { in: matches.map((s) => `settlement:${s.id}:debit`) } },
+      ];
+    }
     if (query.type && query.type !== "ALL") {
       if (
         ![
@@ -75,19 +98,114 @@ export function historyOperations(db: PrismaClient) {
       }),
       db.topUp.count({ where }),
     ]);
+    const ids = rows.flatMap(
+      (row) => row.id.match(/^settlement:(.+):debit$/)?.slice(1) || [],
+    );
+    const settlements = ids.length
+      ? await db.settlement.findMany({
+          where: {
+            id: { in: ids },
+            OR: [
+              { clinic: { userId: actor.id } },
+              { doctor: { userId: actor.id } },
+            ],
+          },
+          select: {
+            id: true,
+            settlementNumber: true,
+            reference: true,
+            receiptUrl: true,
+            payoutMethod: true,
+          },
+        })
+      : [];
+    const receipts = new Map(settlements.map((s) => [s.id, s]));
     return {
-      data: rows.map((row) => ({
+      data: rows.map((row) => {
+        const settlementId = row.id.match(/^settlement:(.+):debit$/)?.[1];
+        const receipt = settlementId ? receipts.get(settlementId) : undefined;
+        return {
+          ...row,
+          settlementId: receipt?.id || null,
+          settlementNumber: receipt?.settlementNumber || null,
+          receiptUrl: receipt?.receiptUrl || null,
+          reference: receipt?.reference || null,
+          payoutMethod: receipt?.payoutMethod || null,
+          direction:
+            row.id.endsWith(":debit") ||
+            row.type === "WITHDRAW" ||
+            row.type === "PENALTY" ||
+            row.amount < 0
+              ? "DEBIT"
+              : row.id.endsWith(":credit") ||
+                  row.type === "RECHARGE" ||
+                  row.type === "REFERALL"
+                ? "CREDIT"
+                : "HISTORICAL_UNSPECIFIED",
+        };
+      }),
+      meta: { page, limit, total },
+    };
+  };
+  const payouts = async (actor: any, query: any) => {
+    if (!["ADMIN", "CLINIC", "DOCTOR"].includes(actor.role))
+      throw new ApiError(403, "Payout history access denied");
+    if (actor.role === "ADMIN")
+      requireAdmin(actor, ["SUPER_ADMIN", "FINANCE", "READ_ONLY"]);
+    const scope = actor.role === "ADMIN" ? {} : await bookingScope(db, actor);
+    const { page, limit, skip } = pageOptions(query);
+    const where = { AND: [scope, payoutFilters(query)] };
+    const [data, total] = await Promise.all([
+      db.settlement.findMany({
+        where,
+        take: limit,
+        skip,
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+        include: {
+          clinic: {
+            select: {
+              id: true,
+              clinicName: true,
+              logo: true,
+              contactPhone: true,
+              user: {
+                select: {
+                  id: true,
+                  fullName: true,
+                  phoneNumber: true,
+                  wallet: true,
+                },
+              },
+            },
+          },
+          doctor: {
+            select: {
+              id: true,
+              user: {
+                select: {
+                  id: true,
+                  fullName: true,
+                  phoneNumber: true,
+                  wallet: true,
+                },
+              },
+            },
+          },
+          processedBy: { select: { id: true, fullName: true } },
+        },
+      }),
+      db.settlement.count({ where }),
+    ]);
+    return {
+      data: data.map((row) => ({
         ...row,
-        direction:
-          row.id.endsWith(":debit") ||
-          row.type === "WITHDRAW" ||
-          row.type === "PENALTY"
-            ? "DEBIT"
-            : row.id.endsWith(":credit") ||
-                row.type === "RECHARGE" ||
-                row.type === "REFERALL"
-              ? "CREDIT"
-              : "HISTORICAL_UNSPECIFIED",
+        ...(actor.role === "ADMIN" ? {} : { notes: undefined }),
+        relatedTransactions: {
+          type: "PAYOUT_WITHDRAWAL",
+          targetReference: row.reference || row.settlementNumber,
+          payoutChannel: row.payoutMethod || "HISTORICAL_UNSPECIFIED",
+          status: row.status,
+        },
       })),
       meta: { page, limit, total },
     };
@@ -179,7 +297,7 @@ export function historyOperations(db: PrismaClient) {
         "Booking groups are fee snapshots by current status, not a second ledger. Wallet and withdrawal totals are all-time. Historical country is unspecified rather than inferred. Cash consultation face value is not platform revenue.",
     };
   };
-  const overview = async (actor: any) => {
+  const overview = async (actor: any, query: any = {}) => {
     if (!["DOCTOR", "CLINIC", "MANAGER"].includes(actor.role))
       throw new ApiError(403, "Role dashboard access denied");
     const scope = await bookingScope(db, actor);
@@ -187,6 +305,88 @@ export function historyOperations(db: PrismaClient) {
     today.setUTCHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    const period = historyDateRange(query);
+    const journalWhere = {
+      userId: actor.id,
+      ...(period ? { createdAt: period } : {}),
+    };
+    const sum = async (where: any) =>
+      (
+        await db.topUp.aggregate({
+          where: { ...journalWhere, ...where },
+          _sum: { amount: true },
+        })
+      )._sum.amount || 0;
+    const earnings =
+      actor.role === "MANAGER"
+        ? null
+        : await (async () => {
+            const [
+              bookingCredits,
+              referralCredits,
+              feeDebits,
+              refundDebits,
+              paidWithdrawals,
+              unclassified,
+              consultations,
+            ] = await Promise.all([
+              sum({ type: "BOOKING", id: { endsWith: ":credit" } }),
+              sum({ type: "REFERALL", amount: { gt: 0 } }),
+              sum({ type: "BOOKING", id: { endsWith: ":debit" } }),
+              sum({ type: "REFUND", id: { endsWith: ":refund:debit" } }),
+              sum({ type: "WITHDRAW", amount: { gt: 0 } }),
+              db.topUp.count({
+                where: {
+                  ...journalWhere,
+                  type: "BOOKING",
+                  NOT: {
+                    OR: [
+                      { id: { endsWith: ":credit" } },
+                      { id: { endsWith: ":debit" } },
+                    ],
+                  },
+                },
+              }),
+              db.bookingAppointment.groupBy({
+                by: ["feeCountry", "collectionMode"],
+                where: {
+                  AND: [
+                    scope,
+                    {
+                      status: "COMPLETE",
+                      ...(period ? { consultDate: period } : {}),
+                    },
+                  ],
+                },
+                _sum: { consultFee: true },
+                _count: { id: true },
+              }),
+            ]);
+            return {
+              bookingCredits,
+              referralCredits,
+              feeDebits,
+              refundDebits,
+              paidWithdrawals,
+              netRecordedEarnings: Number(
+                (
+                  bookingCredits +
+                  referralCredits -
+                  feeDebits -
+                  refundDebits
+                ).toFixed(2),
+              ),
+              unclassifiedHistoricalBookings: unclassified,
+              completedConsultations: consultations.map((c) => ({
+                country: c.feeCountry || "HISTORICAL_UNSPECIFIED",
+                model: c.collectionMode,
+                gross: c._sum.consultFee || 0,
+                count: c._count.id,
+              })),
+              startDate: query.startDate || null,
+              endDate: query.endDate || null,
+            };
+          })();
     const [counts, todayCount, upcoming, user] = await Promise.all([
       db.bookingAppointment.groupBy({
         by: ["status"],
@@ -218,7 +418,7 @@ export function historyOperations(db: PrismaClient) {
         ? null
         : db.user.findUnique({
             where: { id: actor.id },
-            select: { wallet: true, frozenWallet: true },
+            select: { wallet: true, frozenWallet: true, country: true },
           }),
     ]);
     return {
@@ -227,8 +427,15 @@ export function historyOperations(db: PrismaClient) {
       ),
       todayCount,
       upcoming,
-      ...(user ? { wallet: user.wallet, frozenWallet: user.frozenWallet } : {}),
+      ...(user
+        ? {
+            wallet: user.wallet,
+            frozenWallet: user.frozenWallet,
+            walletCountry: user.country,
+            earnings,
+          }
+        : {}),
     };
   };
-  return { complaints, wallet, monitoring, overview };
+  return { complaints, wallet, payouts, monitoring, overview };
 }

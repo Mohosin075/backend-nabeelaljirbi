@@ -40,7 +40,34 @@ test('concurrent payment completion creates exactly one debit and cannot reopen 
   assert.ok(results.some(r => r.status === 'fulfilled'));
   assert.equal((await db.user.findUnique({ where: { id: clinic.id } })).wallet, before - 3);
   assert.equal(await db.topUp.count({ where: { id: `settlement:${request.id}:debit` } }), 1);
+  const ledger = await ops.wallet(clinic, { searchTerm: payload.reference });
+  assert.equal(ledger.data.length, 1); assert.equal(ledger.data[0].reference, payload.reference);
+  assert.equal(ledger.data[0].receiptUrl, payload.receiptUrl); assert.equal(ledger.data[0].settlementNumber, request.settlementNumber);
+  assert.equal((await ops.wallet({ id: 'phase1-other-clinic-user', role: 'CLINIC' }, { searchTerm: payload.reference })).data.length, 0);
   await payouts.update(request.id, payload, admin);
   assert.equal((await db.user.findUnique({ where: { id: clinic.id } })).wallet, before - 3);
   await assert.rejects(payouts.update(request.id, { status: 'APPROVED' }, admin), /Cannot change/);
+});
+test('payout filters support inclusive dates, phone/name, PAID alias and unbreakable recipient scope', async () => {
+  const row = await db.settlement.create({ data: { settlementNumber: `TEST-${randomUUID()}`, clinicId: 'phase1-clinic', partyType: 'CLINIC', amount: 20, status: 'REJECTED', payoutMethod: 'CASH', createdAt: new Date('2026-10-02T23:59:59Z'), notes: 'Internal review notes' } });
+  const query = { startDate: '2026-10-02', endDate: '2026-10-02', status: 'REJECTED', searchTerm: '+218900000002', payoutMethod: 'CASH', limit: 1000 };
+  const mine = await ops.payouts(clinic, query);
+  assert.equal(mine.data.length, 1); assert.equal(mine.data[0].id, row.id); assert.equal(mine.data[0].notes, undefined);
+  assert.equal((await ops.payouts({ id: 'phase1-other-clinic-user', role: 'CLINIC' }, { ...query, clinicId: 'phase1-clinic' })).meta.total, 0);
+  assert.ok((await ops.payouts(admin, { status: 'PAID' })).data.every(r => r.status === 'COMPLETED'));
+  assert.ok((await ops.payouts(admin, { searchTerm: 'Test Clinic Owner' })).meta.total >= 1);
+  await assert.rejects(ops.payouts({ id: 'phase1-patient-user', role: 'PATIENT' }, {}), /denied/);
+  await assert.rejects(ops.payouts({ ...admin, adminTier: 'OPERATIONS' }, {}), /permission/);
+  await assert.rejects(ops.payouts(clinic, { status: 'NOT_REAL' }), /Invalid payout/);
+  await assert.rejects(ops.payouts(clinic, { startDate: '2026-10-03', endDate: '2026-10-01' }), /Start date/);
+});
+test('doctor earnings distinguish journal income, refunds, withdrawals and funding, scoped to selected dates', async () => {
+  const day = new Date('2026-09-10T12:00:00Z');
+  for (const [id, type, amount] of [[`booking:${randomUUID()}:credit`, 'BOOKING', 12], [`booking:${randomUUID()}:debit`, 'BOOKING', 2], [`booking:${randomUUID()}:refund:debit`, 'REFUND', 3], [randomUUID(), 'REFERALL', 5], [randomUUID(), 'WITHDRAW', 4], [randomUUID(), 'RECHARGE', 1000], [randomUUID(), 'BOOKING', 9]]) await db.topUp.create({ data: { id, userId: 'phase1-doctor-user', type, amount, createdAt: day } });
+  await db.topUp.create({ data: { id: `booking:${randomUUID()}:credit`, userId: 'phase1-other-clinic-user', type: 'BOOKING', amount: 999, createdAt: day } });
+  const result = await ops.overview({ id: 'phase1-doctor-user', role: 'DOCTOR' }, { startDate: '2026-09-10', endDate: '2026-09-10' });
+  assert.equal(result.earnings.bookingCredits, 12); assert.equal(result.earnings.referralCredits, 5);
+  assert.equal(result.earnings.netRecordedEarnings, 12); assert.equal(result.earnings.paidWithdrawals, 4);
+  assert.equal(result.earnings.unclassifiedHistoricalBookings, 1);
+  assert.equal((await ops.overview({ id: 'phase1-doctor-user', role: 'DOCTOR' }, { startDate: '2026-09-11', endDate: '2026-09-11' })).earnings.netRecordedEarnings, 0);
 });

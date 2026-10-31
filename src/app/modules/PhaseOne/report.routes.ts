@@ -17,9 +17,12 @@ router.get(
     const { kind, format } = req.params;
     if (
       !["pdf", "xlsx"].includes(format) ||
-      !["bookings", "wallet"].includes(kind)
+      !["bookings", "wallet", "payouts"].includes(kind)
     )
-      throw new ApiError(400, "Choose bookings or wallet and PDF or Excel");
+      throw new ApiError(
+        400,
+        "Choose bookings, wallet or payouts and PDF or Excel",
+      );
     const records = await prisma.$transaction(
       async (tx) => {
         const bookings = bookingOperations(tx as any, {
@@ -37,11 +40,14 @@ router.get(
                   page,
                   limit: 5000,
                 })
-              : await history.wallet(req.user, {
-                  ...req.query,
-                  page,
-                  limit: 5000,
-                });
+              : await history[kind === "payouts" ? "payouts" : "wallet"](
+                  req.user,
+                  {
+                    ...req.query,
+                    page,
+                    limit: 5000,
+                  },
+                );
           if (result.meta.total > 50000)
             throw new ApiError(
               400,
@@ -61,7 +67,11 @@ router.get(
     );
     const table: ReportTable = {
       title:
-        kind === "bookings" ? "Booking and Fee Report" : "Wallet Ledger Report",
+        kind === "bookings"
+          ? "Booking and Fee Report"
+          : kind === "payouts"
+            ? "Settlements and Withdrawal Requests"
+            : "Wallet Ledger Report",
       filters: `Generated ${new Date().toISOString()} | ${
         Object.entries(req.query)
           .filter(([key]) => !["page", "limit"].includes(key))
@@ -80,7 +90,27 @@ router.get(
               "Patient fee",
               "Clinic fee",
             ]
-          : ["Date", "Record ID", "Booking ID", "Type", "Direction", "Amount"],
+          : kind === "payouts"
+            ? [
+                "Request",
+                "Requested / Paid",
+                "Recipient / Phone",
+                "Status / Method",
+                "Country",
+                "Amount",
+                "Reference",
+                "Receipt",
+              ]
+            : [
+                "Date",
+                "Record ID",
+                "Booking ID",
+                "Type",
+                "Direction",
+                "Amount",
+                "Reference",
+                "Receipt",
+              ],
       rows: records.map((row) =>
         kind === "bookings"
           ? [
@@ -97,14 +127,35 @@ router.get(
               row.serviceFeeAmount,
               row.clinicServiceFee,
             ]
-          : [
-              row.createdAt.toISOString(),
-              row.id,
-              row.appointmentId || "",
-              row.type,
-              row.direction,
-              row.amount,
-            ],
+          : kind === "payouts"
+            ? [
+                row.settlementNumber,
+                row.createdAt.toISOString().slice(0, 10) +
+                  " / " +
+                  (row.completedAt?.toISOString().slice(0, 10) || "Unpaid"),
+                (row.clinic?.clinicName || row.doctor?.user.fullName || "") +
+                  " / " +
+                  (row.clinic?.user.phoneNumber ||
+                    row.doctor?.user.phoneNumber ||
+                    ""),
+                (row.status === "COMPLETED" ? "PAID" : row.status) +
+                  " / " +
+                  (row.payoutMethod || "Historical unspecified"),
+                row.payoutCountry || "Historical unspecified",
+                row.amount,
+                row.reference || "",
+                row.receiptUrl || "",
+              ]
+            : [
+                row.createdAt.toISOString(),
+                row.id,
+                row.appointmentId || "",
+                row.type,
+                row.direction,
+                row.amount,
+                row.reference || "",
+                row.receiptUrl || "",
+              ],
       ),
     };
     const file =

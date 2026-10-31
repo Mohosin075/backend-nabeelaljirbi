@@ -1,3 +1,5 @@
+import { historyOperations } from "../PhaseOne/history.operations";
+import { historyDateRange } from "../PhaseOne/finance.policy";
 import { AdminTier, Prisma, TopUpType, UserRole, UserStatus, BookingStatus } from "@prisma/client";
 import bcrypt from "bcrypt";
 import { paginationHelpers } from "../../../utils/paginationHelper";
@@ -1805,145 +1807,8 @@ const getFinancialLedger = async (filters: any, options: IPaginationOptions) => 
 
 // 6. Settlements Management
 const getSettlements = async (filters: any, options: IPaginationOptions, currentUser?: any) => {
-  const { limit, page, skip, sortBy, sortOrder } = paginationHelpers.calculatePagination(options);
-  const { searchTerm, status, partyType, clinicId, doctorId } = filters;
-
-  const andConditions: Prisma.SettlementWhereInput[] = [];
-
-  // Scoping for Clinic & Doctor
-  if (currentUser?.role === "CLINIC" || currentUser?.role === "MANAGER") {
-    let userClinicId = currentUser.clinic?.id;
-    if (!userClinicId && currentUser.manager && currentUser.manager.length > 0) {
-      userClinicId = currentUser.manager[0].clinicId;
-    }
-    if (!userClinicId) {
-      const foundClinic = await prisma.clinic.findFirst({
-        where: { userId: currentUser.id },
-        select: { id: true },
-      });
-      userClinicId = foundClinic?.id;
-    }
-
-    if (userClinicId) {
-      andConditions.push({ clinicId: userClinicId });
-    } else {
-      return {
-        meta: { page, limit, total: 0 },
-        data: [],
-      };
-    }
-  } else if (currentUser?.role === "DOCTOR") {
-    let userDoctorId = currentUser.doctor?.id;
-    if (!userDoctorId) {
-      const foundDoctor = await prisma.doctor.findFirst({
-        where: { userId: currentUser.id },
-        select: { id: true },
-      });
-      userDoctorId = foundDoctor?.id;
-    }
-    if (userDoctorId) {
-      andConditions.push({ doctorId: userDoctorId });
-    } else {
-      return {
-        meta: { page, limit, total: 0 },
-        data: [],
-      };
-    }
-  } else {
-    // Admin role filtering
-    if (clinicId) {
-      andConditions.push({ clinicId });
-    }
-    if (doctorId) {
-      andConditions.push({ doctorId });
-    }
-  }
-
-  if (searchTerm) {
-    andConditions.push({
-      OR: [
-        { settlementNumber: { contains: searchTerm, mode: "insensitive" } },
-        { reference: { contains: searchTerm, mode: "insensitive" } },
-        { notes: { contains: searchTerm, mode: "insensitive" } },
-        { clinic: { clinicName: { contains: searchTerm, mode: "insensitive" } } },
-      ],
-    });
-  }
-
-  if (status) {
-    andConditions.push({ status });
-  }
-
-  if (partyType) {
-    andConditions.push({ partyType });
-  }
-
-  const whereConditions: Prisma.SettlementWhereInput =
-    andConditions.length > 0 ? { AND: andConditions } : {};
-
-  const [total, result] = await Promise.all([
-    prisma.settlement.count({ where: whereConditions }),
-    prisma.settlement.findMany({
-      where: whereConditions,
-      skip,
-      take: limit,
-      orderBy: [{ [sortBy || "createdAt"]: sortOrder === "asc" ? "asc" : "desc" }, { id: "asc" }],
-      include: {
-        clinic: {
-          select: {
-            id: true,
-            clinicName: true,
-            logo: true,
-            contactPhone: true,
-            user: {
-              select: {
-                id: true,
-                fullName: true,
-                phoneNumber: true,
-                wallet: true,
-              },
-            },
-          },
-        },
-        doctor: {
-          select: {
-            id: true,
-            user: {
-              select: {
-                id: true,
-                fullName: true,
-                phoneNumber: true,
-                wallet: true,
-              },
-            },
-          },
-        },
-        processedBy: {
-          select: {
-            id: true,
-            fullName: true,
-            phoneNumber: true,
-            adminTier: true,
-          },
-        },
-      },
-    }),
-  ]);
-
-  const mappedResult = result.map((item) => ({
-    ...item,
-    relatedTransactions: {
-      type: "PAYOUT_WITHDRAWAL",
-      targetReference: item.reference || `REF-${item.settlementNumber}`,
-      payoutChannel: "BANK_TRANSFER",
-      status: item.status,
-    },
-  }));
-
-  return {
-    meta: { page, limit, total },
-    data: mappedResult,
-  };
+  if (!currentUser) throw new ApiError(403, 'Authentication required');
+  return historyOperations(prisma).payouts(currentUser, { ...filters, ...options });
 };
 
 const { create: createSettlement, update: updateSettlementStatus } = settlementOperations(prisma);
@@ -1954,6 +1819,8 @@ const getComplaints = async (filters: any, options: IPaginationOptions) => {
   const { searchTerm, status, targetType } = filters;
 
   const andConditions: Prisma.ComplaintWhereInput[] = [];
+  const dateRange = historyDateRange(filters);
+  if (dateRange) andConditions.push({ createdAt: dateRange });
 
   if (searchTerm) {
     andConditions.push({
@@ -1962,6 +1829,7 @@ const getComplaints = async (filters: any, options: IPaginationOptions) => {
         { subject: { contains: searchTerm, mode: "insensitive" } },
         { description: { contains: searchTerm, mode: "insensitive" } },
         { complainant: { fullName: { contains: searchTerm, mode: "insensitive" } } },
+        { complainant: { phoneNumber: { contains: searchTerm } } },
       ],
     });
   }
