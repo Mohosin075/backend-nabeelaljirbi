@@ -7,7 +7,7 @@ const stripe = new Stripe(config.stripe.stripe_secret_key as string, {
 
 export const createPaymentIntent = async (
   amount: number,
-  paymentMethodId: string
+  paymentMethodId: string,
 ) => {
   try {
     if (amount <= 0) throw new Error("Invalid amount");
@@ -48,90 +48,25 @@ export const checkPaymentStatus = async (paymentIntentId: string) => {
   }
 };
 
-export const createStripeAccount = async (userEmail: string) => {
-  try {
-    const account = await stripe.accounts.create({
-      type: "express",
-      country: "US",
-      // country: "GB",
-      email: userEmail,
-      capabilities: {
-        transfers: { requested: true },
-        card_payments: { requested: true },
-      },
-      business_type: "individual",
-      settings: {
-        payouts: {
-          schedule: {
-            interval: "daily",
-          },
-        },
-      },
-    });
-
-    return account?.id;
-  } catch (error) {
-    console.error("Error creating Stripe Express account:", error);
-    // throw new Error("Failed to create Stripe account");
-    throw new Error(error as any);
-  }
-};
-
-export const generateAccountLink = async (stripeAccountId: string) => {
-  try {
-    // Generate Stripe onboarding link
-    const accountLink = await stripe.accountLinks.create({
-      account: stripeAccountId,
-      refresh_url: `${config.url.frontend_url}/welcome`,
-      return_url: `${config.url.frontend_url}/success`,
-      type: "account_onboarding",
-    });
-
-    return accountLink.url;
-  } catch (error) {
-    console.error("Error generating Stripe account link:", error);
-    throw new Error("Failed to generate Stripe account link");
-  }
-};
-
-// We need to do it web hook
-export const updateStripeAccountStatus = async (stripeAccountId: string) => {
-  try {
-    // Fetch Stripe account details
-    const account = await stripe.accounts.retrieve(stripeAccountId);
-
-    console.log(account);
-
-    return account;
-  } catch (error) {
-    console.error("Error updating Stripe account status:", error);
-    throw new Error("Failed to update Stripe account status");
-  }
-};
-
-export const BalanceTransfer = async (
-  amount: number,
-  cleanerStripeAccountId: string
-) => {
-  try {
-    if (!amount || amount <= 0) throw new Error("Invalid amount");
-    if (!cleanerStripeAccountId)
-      throw new Error("Cleaner Stripe Account ID required");
-
-    // Stripe expects amount in cents as an integer
-    const amountInCents = Math.round(amount * 100);
-
-    const transfer = await stripe.transfers.create({
-      amount: amountInCents,
-      currency: "usd",
-      destination: cleanerStripeAccountId,
-    });
-
-    return transfer;
-  } catch (error: any) {
-    console.error("Error transferring to cleaner:", error);
-    throw new Error(error.message || "Transfer failed");
-  }
-};
+// Wallet top-ups are same-currency payments, separate from USD-priced subscriptions.
+export const createWalletPaymentIntent = async (input: {
+  amount: number;
+  currency: string;
+  paymentMethodId: string;
+  idempotencyKey: string;
+  ledgerId: string;
+  userId: string;
+}) =>
+  stripe.paymentIntents.create(
+    {
+      amount: Math.round(input.amount * 100),
+      currency: input.currency,
+      payment_method: input.paymentMethodId,
+      confirm: true,
+      automatic_payment_methods: { enabled: true, allow_redirects: "never" },
+      metadata: { walletLedgerId: input.ledgerId, userId: input.userId },
+    },
+    { idempotencyKey: input.idempotencyKey },
+  );
 
 export default stripe;

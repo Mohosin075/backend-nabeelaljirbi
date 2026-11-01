@@ -101,3 +101,22 @@ test('family attendee and account contact are preserved in booking Excel and PDF
     await db.bookingAppointment.update({where:{id:original.id},data:{bookedFor:original.bookedFor,familyMemberName:original.familyMemberName,familyMemberRelation:original.familyMemberRelation}});
   }
 });
+
+
+test('legacy onboarding is retired without creating a Connect account and ambiguous top-up cannot charge',async()=>{
+  const response=await fetch(base.replace('/phase-one','/payment/generate-onboarding-link'),{headers:{Authorization:'Bearer phase1-doctor-user'}});
+  assert.equal(response.status,410);assert.match((await response.json()).message,/Bank Details/);
+  const topup=await fetch(base.replace('/phase-one','/payment/patient-top-up'),{method:'POST',headers:{Authorization:'Bearer phase1-patient-user','Content-Type':'application/json'},body:JSON.stringify({amount:50,paymentMethodId:'pm_synthetic'})});
+  assert.equal(topup.status,409);assert.match((await topup.json()).message,/wallet currency/);
+});
+
+
+test('prepaid-card API supports filtered pages above 500 without changing cards',async()=>{
+  const prefix='row-control-'+Date.now()+'-';
+  await db.prepaidCard.createMany({data:Array.from({length:650},(_,i)=>({cardNumber:prefix+i,amount:777}))});
+  const response=await fetch(base.replace('/phase-one','/prepaid-card?limit=1000&page=1&amount=777'),{headers:{Authorization:'Bearer phase1-admin'}});
+  assert.equal(response.status,200);const body=await response.json();
+  assert.equal(body.meta.limit,1000);assert.equal(body.data.data.length,650);
+  const next=await fetch(base.replace('/phase-one','/prepaid-card?limit=500&page=2&amount=777'),{headers:{Authorization:'Bearer phase1-admin'}});
+  const second=await next.json();assert.equal(second.data.data.length,150);assert.equal(second.meta.total,650);
+});

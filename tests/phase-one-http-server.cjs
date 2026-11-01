@@ -5,6 +5,7 @@ const db = new PrismaClient({ datasources: { db: { url: require('./phase-one-tes
 const originalLoad = Module._load;
 const noop = new Proxy({}, { get: () => async () => undefined });
 Module._load = function(request, parent, main) {
+  if (request.endsWith('/helpars/stripe/stripe')) return { createWalletPaymentIntent:async()=>{throw Error('Live Stripe is disabled in isolated tests');} };
   if (request.endsWith('/shared/prisma')) return { __esModule: true, default: db };
   if (request.endsWith('/middlewares/auth')) return { __esModule: true, default: (...roles) => async (req, res, next) => {
     try {
@@ -29,12 +30,16 @@ const { ClinicController } = require('../src/app/modules/Clinic/clinic.controlle
 const { PatientController } = require('../src/app/modules/Patient/patient.controller');
 const { DoctorController } = require('../src/app/modules/Doctor/doctor.controller');
 const { BookingRoutes } = require('../src/app/modules/Booking/booking.routes');
+const { PaymentRoutes } = require('../src/app/modules/Payment/payment.routes');
+const { PrepaidCardRoutes } = require('../src/app/modules/PrepaidCard/prepaidCard.routes');
 const testAuth = Module._load('../middlewares/auth').default();
 Module._load = originalLoad;
 function createTestApp() {
   const app = express(); app.use(require('cors')()); app.use(express.json());
   for (const router of routers) app.use('/api/v1/phase-one', router);
   app.use('/api/v1/booking', BookingRoutes);
+  app.use('/api/v1/payment', PaymentRoutes);
+  app.use('/api/v1/prepaid-card', PrepaidCardRoutes);
   const forRole = role => (req,res,next) => req.user.role === role ? next() : res.status(403).json({success:false,message:'Role not permitted'});
   app.post('/api/v1/patient/appointment-booking',testAuth,forRole('PATIENT'),require('../src/app/middlewares/validateRequest').default(require('../src/app/modules/Booking/booking.validation').bookingValidation.createBookingValidationSchema),PatientController.bookingAppointment);
   app.get('/api/v1/patient/appointment-history',testAuth,forRole('PATIENT'),PatientController.getAppointmentHistory);

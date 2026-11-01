@@ -1,13 +1,11 @@
+import { walletTopupOperations } from "./wallet-topup.operations";
 import { settlementOperations } from "../Admin/settlement.operations";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
 import {
-  BalanceTransfer,
   checkPaymentStatus,
   createPaymentIntent,
-  createStripeAccount,
-  generateAccountLink,
-  updateStripeAccountStatus,
+  createWalletPaymentIntent,
 } from "../../../helpars/stripe/stripe";
 import { ICardPaymentDetails } from "./payment.interface";
 import prisma from "../../../shared/prisma";
@@ -22,51 +20,7 @@ import {
   TopUpType,
 } from "@prisma/client";
 
-const CreatePatientPayment = async (
-  userId: string,
-  payload: ICardPaymentDetails,
-) => {
-  const { paymentMethodId, amount } = payload;
-
-  const patient = await prisma.user.findUnique({
-    where: {
-      id: userId,
-    },
-  });
-
-  if (!patient) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Patient not found");
-  }
-
-  const paymentIntent = await createPaymentIntent(amount, paymentMethodId);
-  const PaymentStatustus = await checkPaymentStatus(paymentIntent.id);
-
-  if (PaymentStatustus.status === "succeeded") {
-    const tx = await prisma.$transaction(async (tx) => {
-      await tx.user.update({
-        where: {
-          id: userId,
-        },
-        data: {
-          wallet: {
-            increment: amount,
-          },
-        },
-      });
-
-      // create top up
-      await tx.topUp.create({
-        data: {
-          userId,
-          amount,
-          type: "RECHARGE",
-        },
-      });
-    });
-  }
-
-  return PaymentStatustus;
-};
+const CreatePatientPayment = walletTopupOperations(prisma, createWalletPaymentIntent);
 
 const PatientPlatformSubscription = async (
   userId: string,
@@ -193,61 +147,9 @@ const ClinicPlatformSubscription = async (
   return paymentStatus;
 };
 
-const StripeGenerateOnboardingLink = async (userId: string) => {
-  const user = await prisma.user.findUnique({
-    where: {
-      id: userId,
-    },
-    select: {
-      id: true,
-      stripeAccountId: true,
-      stripeDetailsSubmitted: true,
-      stripePayoutsEnabled: true,
-      email: true,
-    },
-  });
-
-  if (!user) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Cleaner not found");
-  }
-
-  if (!user.email) {
-    return "Please update your profile set up email";
-  }
-
-  let stripeAccountId = user.stripeAccountId;
-
-  if (!stripeAccountId) {
-    stripeAccountId = await createStripeAccount(user.email || "");
-
-    await prisma.user.update({
-      where: {
-        id: userId,
-      },
-      data: {
-        stripeAccountId,
-      },
-    });
-  }
-
-  if (stripeAccountId) {
-    const account = await updateStripeAccountStatus(stripeAccountId);
-    if (account.charges_enabled && account.details_submitted) {
-      await prisma.user.update({
-        where: {
-          id: userId,
-        },
-        data: {
-          stripeDetailsSubmitted: true,
-          stripePayoutsEnabled: true,
-        },
-      });
-      return "Profile already completed";
-    }
-  }
-
-  const generateAccount = await generateAccountLink(stripeAccountId || "");
-  return generateAccount;
+// Installed clients receive a clear upgrade response; no Connect account is created.
+const StripeGenerateOnboardingLink = async (_userId: string) => {
+  throw new ApiError(410, "Stripe onboarding is retired. Use Bank Details & Withdrawals for an admin-approved bank or cash payout.");
 };
 
 // Preserve the old URL for installed clients, but route it through admin approval.

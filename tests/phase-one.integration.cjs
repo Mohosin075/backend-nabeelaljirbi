@@ -97,3 +97,50 @@ test('bank profile eligibility requires approved doctor and remote flag together
     await db.user.update({where:{id:original.id},data:{remoteConsultationsEnabled:original.remoteConsultationsEnabled}});
   }
 });
+
+
+test('same-currency Stripe top-up credits once on retries and concurrent delivery',async()=>{
+  const {walletTopupOperations}=require('../src/app/modules/Payment/wallet-topup.operations');
+  const user=await db.user.create({data:{id:'topup-synthetic-patient',phoneNumber:'topup-synthetic-patient',role:'PATIENT',country:'EGYPT',wallet:0}});
+  let charges=0;const received=[];
+  const op=walletTopupOperations(db,async input=>{charges++;received.push(input);return {status:'succeeded',currency:input.currency,amount_received:Math.round(input.amount*100),metadata:{walletLedgerId:input.ledgerId}};});
+  const payload={amount:50,currency:'EGP',requestId:Date.now()+'-0000000000000001',paymentMethodId:'pm_synthetic'};
+  const result=await Promise.all([op(user.id,payload),op(user.id,payload)]);
+  assert.ok(result.every(row=>row.success));
+  assert.equal((await db.user.findUnique({where:{id:user.id}})).wallet,50);
+  assert.equal(await db.topUp.count({where:{userId:user.id}}),1);
+  const beforeRetry=charges;await op(user.id,payload);assert.equal(charges,beforeRetry);
+  assert.ok(received.every(row=>row.currency==='egp'&&row.amount===50));
+  await assert.rejects(op(user.id,{...payload,amount:60}),/already used/);
+});
+
+test('unsafe legacy top-ups, unsupported wallet currencies and mismatched provider replies never credit or charge incorrectly',async()=>{
+  const {walletTopupOperations}=require('../src/app/modules/Payment/wallet-topup.operations');
+  let calls=0; const op=walletTopupOperations(db,async input=>{calls++;return {status:'succeeded',currency:'usd',amount_received:5000,metadata:{walletLedgerId:input.ledgerId}};});
+  const payload={amount:50,currency:'EGP',requestId:Date.now()+'-0000000000000002',paymentMethodId:'pm_synthetic'};
+  await assert.rejects(op('topup-synthetic-patient',{...payload,currency:undefined}),/Confirm the wallet currency/);
+  await assert.rejects(op('topup-synthetic-patient',{...payload,requestId:undefined}),/unique request/);
+  await assert.rejects(op('topup-synthetic-patient',{...payload,amount:50.001}),/decimal places/);
+  const libya=await db.user.create({data:{phoneNumber:'topup-libya-synthetic',role:'PATIENT',country:'LIBYA'}});
+  await assert.rejects(op(libya.id,{...payload,currency:'LYD'}),/unavailable/);
+  await assert.rejects(op('topup-synthetic-patient',{...payload,requestId:(Date.now()-24*3600000)+'-0000000000000004'}),/expired/);
+  assert.equal(calls,0);
+  await assert.rejects(op('topup-synthetic-patient',payload),/verification failed/);
+  assert.equal((await db.user.findUnique({where:{id:'topup-synthetic-patient'}})).wallet,50);
+  assert.equal(await db.topUp.count({where:{userId:'topup-synthetic-patient'}}),1);
+});
+
+test('pending card authorization does not become a successful wallet credit and changed accounts roll back the journal',async()=>{
+  const {walletTopupOperations}=require('../src/app/modules/Payment/wallet-topup.operations');
+  const payload={amount:5,currency:'DZD',requestId:Date.now()+'-0000000000000003',paymentMethodId:'pm_synthetic'};
+  const user=await db.user.create({data:{phoneNumber:'topup-algeria-synthetic',role:'PATIENT',country:'ALGERIA',wallet:0}});
+  const pending=await walletTopupOperations(db,async()=>({status:'requires_action'}))(user.id,payload);
+  assert.equal(pending.success,false);assert.equal(await db.topUp.count({where:{userId:user.id}}),0);
+  const changed=walletTopupOperations(db,async input=>{
+    await db.user.update({where:{id:user.id},data:{banned:true}});
+    return {status:'succeeded',currency:'dzd',amount_received:500,metadata:{walletLedgerId:input.ledgerId}};
+  });
+  await assert.rejects(changed(user.id,payload),/Account changed/);
+  assert.equal(await db.topUp.count({where:{userId:user.id}}),0);
+  assert.equal((await db.user.findUnique({where:{id:user.id}})).wallet,0);
+});
