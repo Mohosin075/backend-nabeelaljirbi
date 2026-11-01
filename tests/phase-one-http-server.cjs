@@ -44,6 +44,11 @@ function createTestApp() {
     if (!['CLINIC','MANAGER','ADMIN'].includes(req.user.role)) return res.status(403).json({success:false,message:'Clinic staff required'});
     return ClinicController.getClinicManagerDoctor(req,res,next);
   });
+  app.get('/api/v1/clinic/manager/booking-history',testAuth,ClinicController.getManagerBookingHistory);
+  app.get('/api/v1/clinic/manager-stats',testAuth,ClinicController.getClinicManagerStats);
+  app.get('/api/v1/clinic/settlements',testAuth,AdminController.getSettlements);
+  app.get('/api/v1/clinic/reconciliation-reports',testAuth,ClinicController.getClinicReconciliationReports);
+  app.get('/api/v1/clinic/financial-summary',testAuth,ClinicController.getClinicFinancialSummary);
   // Local synthetic accounts only. Exercise the real legacy read services too.
   const reads = {
     settlements: AdminController.getSettlements,

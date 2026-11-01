@@ -69,7 +69,7 @@ test('country fee changes are atomic and require finance authorization', async (
 });
 test('absence and patient filters remain distinct and date ranges include the whole final day', () => {
   assert.deepEqual(bookingFilters({ status: 'DOCTOR_ABSENT' }), { absenceType: 'DOCTOR_ABSENT' });
-  assert.deepEqual(bookingFilters({ status: 'PATIENT_NO_SHOW' }), { status: 'NOT_SHOW' });
+  assert.equal(bookingFilters({ status: 'PATIENT_NO_SHOW' }).status, 'NOT_SHOW');
   assert.equal(bookingFilters({ date: '2026-11-01' }).consultDate.lte.toISOString(), '2026-11-01T23:59:59.999Z');
 });
 test('PDF and Excel report filters retain the existing reconciliation periods, clinic and shift', () => {
@@ -79,4 +79,21 @@ test('PDF and Excel report filters retain the existing reconciliation periods, c
   assert.equal(filters.consultDate.lte.toISOString(), '2026-09-30T23:59:59.999Z');
   assert.deepEqual(filters.startTime, { lt: '13:00' });
   assert.equal(filters.status, 'COMPLETE');
+});
+
+
+test('bank profile eligibility requires approved doctor and remote flag together',async()=>{
+  const original=await db.user.findUnique({where:{id:'phase1-doctor-user'},include:{doctor:true}});
+  try {
+    for(const [approved,remote,expected] of [[false,true,false],[true,false,false],[true,true,true]]) {
+      await db.doctor.update({where:{userId:original.id},data:{adminVerified:approved}});
+      await db.user.update({where:{id:original.id},data:{remoteConsultationsEnabled:remote}});
+      const profile=await operations.readBank(original.id);
+      assert.equal(profile.withdrawalEligible,expected);
+      if(!expected) assert.ok(profile.withdrawalEligibilityReason);
+    }
+  } finally {
+    await db.doctor.update({where:{userId:original.id},data:{adminVerified:original.doctor.adminVerified}});
+    await db.user.update({where:{id:original.id},data:{remoteConsultationsEnabled:original.remoteConsultationsEnabled}});
+  }
 });

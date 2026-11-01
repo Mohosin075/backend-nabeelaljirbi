@@ -105,12 +105,12 @@ export function pdfReport(table: ReportTable): Promise<Buffer> {
             : String(value),
       );
       const height = Math.min(
-        76,
+        doc.page.height - 180,
         Math.max(
           34,
           ...values.map(
             (value) =>
-              Math.ceil(value.length / Math.max(9, Math.floor(cell / 5))) * 13 +
+              value.split("\n").reduce((lines, line) => lines + Math.max(1, Math.ceil(line.length / Math.max(9, Math.floor(cell / 5)))), 0) * 14 +
               12,
           ),
         ),
@@ -131,8 +131,9 @@ export function pdfReport(table: ReportTable): Promise<Buffer> {
           let pen = right,
             line = y + 6;
           for (const run of value.match(
-            /[\u0600-\u06ff]+|[^\u0600-\u06ff]+/g,
+            /[\u0600-\u06ff]+|[^\s\u0600-\u06ff]+|\n|[ \t]+/g,
           ) || []) {
+            if (run === "\n") { pen = right; line += 14; continue; }
             doc
               .font(/[\u0600-\u06ff]/.test(run) ? "Arabic" : "Helvetica")
               .fontSize(8);

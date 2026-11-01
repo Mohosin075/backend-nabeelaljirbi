@@ -1,4 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { getClinicCalendarDate } from "../../../utils/timezoneHelper";
+import { bookingDisplayStatus } from "../../../utils/bookingDisplay";
 import ApiError from "../../../errors/ApiErrors";
 import { bookingFilters, pageOptions } from "./phaseOne.policy";
 import { requireAdmin } from "./phaseOne.access";
@@ -300,10 +302,14 @@ export function historyOperations(db: PrismaClient) {
     if (!["DOCTOR", "CLINIC", "MANAGER"].includes(actor.role))
       throw new ApiError(403, "Role dashboard access denied");
     const scope = await bookingScope(db, actor);
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    const now = new Date(Date.now());
+    const scopedClinics = await db.bookingAppointment.findMany({
+      where: scope, distinct: ["clinicId"],
+      select: { clinicId: true, clinic: { select: { timezone: true } } },
+    });
+    const clinicDays = scopedClinics.map(row => ({ clinicId: row.clinicId, date: getClinicCalendarDate(now, row.clinic.timezone) }));
+    const todayScope = { OR: clinicDays.map(({ clinicId, date }) => ({ clinicId, consultDate: { gte: date, lt: new Date(date.getTime() + 86400000) } })) };
+    const upcomingScope = { OR: clinicDays.map(({ clinicId, date }) => ({ clinicId, consultDate: { gte: date } })) };
     const period = historyDateRange(query);
     const journalWhere = {
       userId: actor.id,
@@ -388,17 +394,16 @@ export function historyOperations(db: PrismaClient) {
           })();
     const [counts, todayCount, upcoming, user] = await Promise.all([
       db.bookingAppointment.groupBy({
-        by: ["status"],
+        by: ["status", "absenceType", "noShowReason", "cancellationReason"],
         where: scope,
         _count: { id: true },
       }),
       db.bookingAppointment.count({
-        where: { ...scope, consultDate: { gte: today, lt: tomorrow } },
+        where: { AND: [scope, todayScope] },
       }),
       db.bookingAppointment.findMany({
         where: {
-          ...scope,
-          consultDate: { gte: today },
+          AND: [scope, upcomingScope],
           status: { in: ["PENDING", "CONFIRMED", "ARRIVED", "INPROGRESS"] },
         },
         take: 10,
@@ -421,9 +426,10 @@ export function historyOperations(db: PrismaClient) {
           }),
     ]);
     return {
-      statusCounts: Object.fromEntries(
-        counts.map((c) => [c.status, c._count.id]),
-      ),
+      statusCounts: counts.reduce((all, row) => ({ ...all, [row.status]: (all[row.status] || 0) + row._count.id }), {} as Record<string, number>),
+      displayStatusCounts: counts.reduce((all, row) => { const status = bookingDisplayStatus(row); all[status] = (all[status] || 0) + row._count.id; return all; }, {} as Record<string, number>),
+      dateBasis: "CLINIC_LOCAL",
+      clinicLocalDates: clinicDays.map(({ clinicId, date }) => ({ clinicId, date: date.toISOString().slice(0, 10) })),
       todayCount,
       upcoming,
       ...(user

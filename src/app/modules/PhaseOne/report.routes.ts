@@ -85,7 +85,7 @@ router.get(
               "Status / Model",
               "Clinic / Country",
               "Doctor",
-              "Patient",
+              "Attendee / Account contact",
               "Consultation",
               "Patient fee",
               "Clinic fee",
@@ -122,7 +122,9 @@ router.get(
                 " / " +
                 (row.feeCountry || "Historical unspecified"),
               row.doctor.user.fullName || "",
-              row.patient.user.fullName || "",
+              (row.bookedFor === "FAMILY" || row.bookedFor === "FAMILY_MEMBER"
+                ? `${row.familyMemberName || "Unnamed family member"} (${row.familyMemberRelation || "Family"})\nAccount: ` : "") +
+                (row.patient.user.fullName || "") + " / " + (row.patient.user.phoneNumber || ""),
               row.consultFee,
               row.serviceFeeAmount,
               row.clinicServiceFee,

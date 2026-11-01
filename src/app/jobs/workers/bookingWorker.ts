@@ -536,6 +536,7 @@ export const appointmentLifecycleWorker = new Worker<
           where: { id: appointmentId, status: BookingStatus.CONFIRMED },
           data: {
             status: BookingStatus.NOT_SHOW,
+            absenceType: "AUTO_UNRESOLVED",
             ...(isModeB && consultFee > 0 ? { refundPatient: true, returnPatientBalance: true } : {}),
             cancellationReason: "Auto-settled: Neglected (no arrival recorded)",
             ...({ noShowReason: "Auto-settled: Neglected (no arrival recorded)" } as any),

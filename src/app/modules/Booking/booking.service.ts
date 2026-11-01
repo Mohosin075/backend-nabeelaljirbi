@@ -11,6 +11,7 @@ import { NotificationTemplateService } from "../NotificationTemplate/notificatio
 import { checkCancellationAllowed, getAppointmentStartUTC, getClinicCalendarDate } from "../../../utils/timezoneHelper";
 import { calculateBookingFees, bookingCurrencyCode } from "../../../utils/money";
 import { assertArrivalWindow } from "../PhaseOne/phaseOne.policy";
+import { patientNoShowWhere, automaticUnresolvedWhere, bookingDisplayStatus } from "../../../utils/bookingDisplay";
 
 type BookingActorRole = "PATIENT" | "DOCTOR" | "CLINIC" | "MANAGER" | "ADMIN" | "SYSTEM";
 
@@ -1231,7 +1232,11 @@ const getBookings = async (userId: string, role: string, options: any) => {
   }
 
   const filters: Prisma.BookingAppointmentWhereInput = {};
-  if (status) {
+  if (status === "DOCTOR_ABSENT") filters.absenceType = "DOCTOR_ABSENT";
+  else if (status === "PATIENT_NO_SHOW" || status === "AUTO_UNRESOLVED") {
+    filters.status = BookingStatus.NOT_SHOW;
+    filters.AND = [status === "AUTO_UNRESOLVED" ? automaticUnresolvedWhere : patientNoShowWhere];
+  } else if (status) {
     if (!Object.values(BookingStatus).includes(status as BookingStatus)) {
       throw new ApiError(httpStatus.BAD_REQUEST, "Invalid booking status");
     }
@@ -1316,7 +1321,7 @@ const getBookings = async (userId: string, role: string, options: any) => {
       limit,
       total,
     },
-    data: bookings,
+    data: bookings.map(row => ({ ...row, displayStatus: bookingDisplayStatus(row) })),
   };
 };
 

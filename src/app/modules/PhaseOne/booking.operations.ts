@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import ApiError from "../../../errors/ApiErrors";
 import { bookingFilters, pageOptions } from "./phaseOne.policy";
 import { bookingScope, requireAdmin } from "./phaseOne.access";
+import { bookingDisplayStatus } from "../../../utils/bookingDisplay";
 
 export function bookingOperations(
   db: PrismaClient,
@@ -42,12 +43,7 @@ export function bookingOperations(
     return {
       data: rows.map((row) => ({
         ...row,
-        displayStatus:
-          row.absenceType === "DOCTOR_ABSENT"
-            ? "DOCTOR_ABSENT"
-            : row.status === "NOT_SHOW"
-              ? "PATIENT_NO_SHOW"
-              : row.status,
+        displayStatus: bookingDisplayStatus(row),
       })),
       meta: { page, limit, total },
     };

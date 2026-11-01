@@ -83,3 +83,21 @@ test('generic moderation cannot bypass Super Admin staff-account controls', asyn
   await assert.rejects(AdminService.bannedUser(before.id,true,'Synthetic permission check',{id:'phase1-admin',role:'ADMIN',adminTier:'OPERATIONS'}),/Super Admin staff controls/);
   assert.deepEqual(await db.user.findUnique({where:{id:before.id}}),before);
 });
+
+
+test('family attendee and account contact are preserved in booking Excel and PDF',async()=>{
+  const original=await db.bookingAppointment.findUnique({where:{id:'phase1-legacy-booking'}});
+  try {
+    await db.bookingAppointment.update({where:{id:original.id},data:{bookedFor:'FAMILY',familyMemberName:'Synthetic Family Attendee',familyMemberRelation:'Sister'}});
+    const response=await request('/reports/bookings/xlsx');
+    assert.equal(response.status,200);
+    const book=new ExcelJS.Workbook();await book.xlsx.load(Buffer.from(await response.arrayBuffer()));
+    const contacts=[];book.worksheets[0].eachRow(row=>contacts.push(row.getCell(5).text));
+    assert.ok(contacts.some(text=>text.includes('Synthetic Family Attendee (Sister)')&&text.includes('Account:')));
+    const pdf=await request('/reports/bookings/pdf');assert.equal(pdf.status,200);
+    require('node:fs').mkdirSync('tmp/mismatch-reports',{recursive:true});
+    require('node:fs').writeFileSync('tmp/mismatch-reports/family-bookings.pdf',Buffer.from(await pdf.arrayBuffer()));
+  } finally {
+    await db.bookingAppointment.update({where:{id:original.id},data:{bookedFor:original.bookedFor,familyMemberName:original.familyMemberName,familyMemberRelation:original.familyMemberRelation}});
+  }
+});

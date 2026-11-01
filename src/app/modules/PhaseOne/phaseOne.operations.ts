@@ -196,6 +196,12 @@ export function phaseOneOperations(db: PrismaClient) {
     return {
       bankDetails: user.bankDetails,
       remoteConsultationsEnabled: user.remoteConsultationsEnabled,
+      withdrawalEligible: user.status === "ACTIVE" && !user.banned && (user.role === "CLINIC" || (!!user.doctor?.adminVerified && user.remoteConsultationsEnabled)),
+      withdrawalEligibilityReason: user.role === "DOCTOR" && !user.doctor?.adminVerified
+        ? "Doctor approval is required before requesting a withdrawal."
+        : user.role === "DOCTOR" && !user.remoteConsultationsEnabled
+          ? "Main Admin must enable remote consultations before requesting a withdrawal."
+          : user.status !== "ACTIVE" || user.banned ? "Account must be active." : null,
     };
   };
   const countryFees = async (records: any, admin: any) =>

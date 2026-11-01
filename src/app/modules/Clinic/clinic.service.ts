@@ -1,5 +1,8 @@
+import { reconciliationGroups } from "../../../utils/reconciliation";
+import { bookingCurrencyCode } from "../../../utils/money";
+import { bookingDisplayStatus } from "../../../utils/bookingDisplay";
 import { assertProfileEditable } from "../PhaseOne/phaseOne.policy";
-import { assertArrivalWindow } from "../PhaseOne/phaseOne.policy";
+import { bookingFilters, assertArrivalWindow } from "../PhaseOne/phaseOne.policy";
 import { Prisma, UserRole, BookingStatus, TopUpType, UserStatus } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
@@ -526,9 +529,7 @@ const getBookingHistory = async (
   }
 
   if (status) {
-    andConditions.push({
-      status: { equals: status },
-    });
+    andConditions.push(bookingFilters({ status: status }));
   }
 
   if (filterData.doctorId) {
@@ -567,6 +568,8 @@ const getBookingHistory = async (
       id: true,
       consultDate: true,
       status: true,
+      absenceType: true,
+      noShowReason: true,
       serialNumber: true,
       startTime: true,
       endTime: true,
@@ -615,7 +618,7 @@ const getBookingHistory = async (
   // For now, we just pass it through or reshape if required
   const processedBookings = bookings.map((booking) => ({
     ...booking,
-    // Add any custom fields here if needed in future
+    displayStatus: bookingDisplayStatus(booking),
   }));
 
   // 3️⃣ Pagination using Slice (In-Memory)
@@ -694,9 +697,7 @@ const getManagerBookingHistory = async (
   }
 
   if (filterData.status) {
-    andConditions.push({
-      status: { equals: filterData.status },
-    });
+    andConditions.push(bookingFilters({ status: filterData.status }));
   }
 
   if (filterData.doctorId) {
@@ -735,6 +736,8 @@ const getManagerBookingHistory = async (
       id: true,
       consultDate: true,
       status: true,
+      absenceType: true,
+      noShowReason: true,
       serialNumber: true,
       startTime: true,
       endTime: true,
@@ -783,7 +786,7 @@ const getManagerBookingHistory = async (
   // For now, we just pass it through or reshape if required
   const processedBookings = bookings.map((booking) => ({
     ...booking,
-    // Add any custom fields here if needed in future
+    displayStatus: bookingDisplayStatus(booking),
   }));
 
   // 3️⃣ Pagination using Slice (In-Memory)
@@ -2589,6 +2592,7 @@ const getClinicReconciliationReports = async (
       select: {
         id: true,
         status: true,
+        feeCountry: true,
         consultFee: true,
         serviceFeeAmount: true,
         clinicServiceFee: true,
@@ -2613,86 +2617,8 @@ const getClinicReconciliationReports = async (
     }),
   ]);
 
-  let totalCompleted = 0;
-  let totalConfirmed = 0;
-  let totalCancelled = 0;
-  let totalNoShow = 0;
-  let totalPending = 0;
-  let totalConsultFees = 0;
-  let totalServiceFees = 0;
-  let totalPatientServiceFees = 0;
-  let platformCollectedConsultFees = 0;
-
-  const doctorSummaryMap = new Map<
-    string,
-    { doctorId: string; doctorName: string; totalBookings: number; completedBookings: number; totalConsultFee: number }
-  >();
-
-  const clinicSummaryMap = new Map<
-    string,
-    { clinicId: string; clinicName: string; location: string; totalBookings: number; completedBookings: number; totalConsultFee: number; totalServiceFee: number }
-  >();
-
-  for (const apt of allMatching) {
-    if (apt.status === BookingStatus.COMPLETE) {
-      totalCompleted++;
-      totalConsultFees += apt.consultFee || 0;
-      totalServiceFees += apt.clinicServiceFee || 0;
-      totalPatientServiceFees += apt.serviceFeeAmount || 0;
-      if (apt.collectionMode === "MODE_B") platformCollectedConsultFees += apt.consultFee || 0;
-    } else if (
-      apt.status === BookingStatus.CONFIRMED ||
-      apt.status === BookingStatus.INPROGRESS ||
-      apt.status === BookingStatus.ARRIVED
-    ) {
-      totalConfirmed++;
-    } else if (apt.status === BookingStatus.CANCELLED || apt.status === BookingStatus.REJECTED) {
-      totalCancelled++;
-    } else if (apt.status === BookingStatus.NOT_SHOW) {
-      totalNoShow++;
-    } else if (apt.status === BookingStatus.PENDING) {
-      totalPending++;
-    }
-
-    if (apt.doctorId && apt.doctor?.user?.fullName) {
-      const docName = apt.doctor.user.fullName;
-      const existing = doctorSummaryMap.get(apt.doctorId) || {
-        doctorId: apt.doctorId,
-        doctorName: docName,
-        totalBookings: 0,
-        completedBookings: 0,
-        totalConsultFee: 0,
-      };
-      existing.totalBookings++;
-      if (apt.status === BookingStatus.COMPLETE) {
-        existing.completedBookings++;
-        existing.totalConsultFee += apt.consultFee || 0;
-      }
-      doctorSummaryMap.set(apt.doctorId, existing);
-    }
-
-    if (apt.clinicId && apt.clinic?.clinicName) {
-      const cName = apt.clinic.clinicName;
-      const cLoc = apt.clinic.location || "";
-      const existing = clinicSummaryMap.get(apt.clinicId) || {
-        clinicId: apt.clinicId,
-        clinicName: cName,
-        location: cLoc,
-        totalBookings: 0,
-        completedBookings: 0,
-        totalConsultFee: 0,
-        totalServiceFee: 0,
-      };
-      existing.totalBookings++;
-      if (apt.status === BookingStatus.COMPLETE) {
-        existing.completedBookings++;
-        existing.totalConsultFee += apt.consultFee || 0;
-        existing.totalServiceFee += apt.clinicServiceFee || 0;
-      }
-      clinicSummaryMap.set(apt.clinicId, existing);
-    }
-  }
-
+  const { doctorBreakdown, clinicBreakdown, ...grouped } = reconciliationGroups(allMatching);
+  const count = (...statuses: string[]) => allMatching.filter(row => statuses.includes(row.status)).length;
   return {
     meta: {
       page,
@@ -2702,20 +2628,13 @@ const getClinicReconciliationReports = async (
     },
     summary: {
       totalBookings: allMatching.length,
-      totalCompleted,
-      totalConfirmed,
-      totalCancelled,
-      totalNoShow,
-      totalPending,
-      totalConsultFees,
-      totalServiceFees,
-      totalPatientServiceFees,
-      platformCollectedConsultFees,
-      netClinicReceivable: Number((totalConsultFees - totalServiceFees).toFixed(2)),
+      totalCompleted: count("COMPLETE"), totalConfirmed: count("CONFIRMED", "INPROGRESS", "ARRIVED"),
+      totalCancelled: count("CANCELLED", "REJECTED"), totalNoShow: count("NOT_SHOW"), totalPending: count("PENDING"),
+      ...grouped,
     },
-    doctorBreakdown: Array.from(doctorSummaryMap.values()),
-    clinicBreakdown: Array.from(clinicSummaryMap.values()),
-    data: appointments,
+    doctorBreakdown,
+    clinicBreakdown,
+    data: appointments.map(row => ({ ...row, displayStatus: bookingDisplayStatus(row) })),
   };
 };
 
@@ -2748,11 +2667,12 @@ const getClinicFinancialSummary = async (userId: string) => {
   const whereClinic: Prisma.BookingAppointmentWhereInput = clinicId
     ? { clinicId, status: BookingStatus.COMPLETE }
     : { status: BookingStatus.COMPLETE };
+  const walletScope = { ...whereClinic, feeCountry: user.country };
 
   const [currentMonthAppointments, completedAppointments, lifetimeAppointments] = await Promise.all([
     prisma.bookingAppointment.aggregate({
       where: {
-        ...whereClinic,
+        ...walletScope,
         consultDate: { gte: monthStart },
       },
       _sum: {
@@ -2766,9 +2686,13 @@ const getClinicFinancialSummary = async (userId: string) => {
     prisma.bookingAppointment.count({
       where: whereClinic,
     }),
-    prisma.bookingAppointment.aggregate({ where: whereClinic, _sum: { consultFee: true, clinicServiceFee: true } }),
+    prisma.bookingAppointment.aggregate({ where: walletScope, _sum: { consultFee: true, clinicServiceFee: true } }),
   ]);
 
+  const consultationTotalsByCountry = await prisma.bookingAppointment.groupBy({
+    by: ["feeCountry"], where: whereClinic,
+    _sum: { consultFee: true, clinicServiceFee: true }, _count: { id: true },
+  });
   const recentTransactions = await prisma.topUp.findMany({
     where: clinicId ? { userId: clinicUserId } : {},
     orderBy: { createdAt: "desc" },
@@ -2776,6 +2700,12 @@ const getClinicFinancialSummary = async (userId: string) => {
   });
 
   return {
+    walletCountry: user.country,
+    walletCurrency: bookingCurrencyCode(user.country) || "Unspecified",
+    consultationTotalsByCountry: consultationTotalsByCountry.map(row => ({
+      country: row.feeCountry || "HISTORICAL_UNSPECIFIED", currency: bookingCurrencyCode(row.feeCountry) || "Unspecified",
+      gross: row._sum.consultFee || 0, platformFees: row._sum.clinicServiceFee || 0, completedCount: row._count.id,
+    })),
     walletBalance: user.wallet || 0,
     frozenWallet: user.frozenWallet || 0,
     // User.totalEarnings/currentEarnings belong to referrals, not consultations.

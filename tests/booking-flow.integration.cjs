@@ -792,3 +792,65 @@ test("real scheduler uses clinic-local deadlines and restores arrived jobs after
     data: { status: "NOT_SHOW" },
   });
 });
+
+
+test("reconciliation separates saved countries, unknown history and doctor/clinic totals", async () => {
+  const f = await fixture("MODE_A", "EGYPT");
+  const b = await BookingService.createBooking(f.patient.id, f.payload);
+  await db.bookingAppointment.update({ where:{id:b.id}, data:{status:"COMPLETE", feeCountry:"EGYPT", consultFee:100, clinicServiceFee:5} });
+  const clone = await db.bookingAppointment.findUnique({where:{id:b.id}});
+  for (const [country, fee] of [["TUNISIA",200],[null,300]]) {
+    await db.bookingAppointment.create({data:{...clone,id:randomUUID(),serialNumber:clone.serialNumber + fee,feeCountry:country,consultFee:fee}});
+  }
+  const balanceBeforeReads = await wallet(f.owner.id);
+  const result = await ClinicService.getClinicReconciliationReports(f.owner.id, {}, {limit:100});
+  assert.equal(result.summary.totalConsultFees,null);
+  assert.equal(result.summary.currency,null);
+  assert.deepEqual(result.summary.byCountry.map(g=>[g.country,g.currency,g.totalConsultFees]).sort(),[["EGYPT","EGP",100],["HISTORICAL_UNSPECIFIED","Unspecified",300],["TUNISIA","TND",200]].sort());
+  assert.equal(result.doctorBreakdown.length,3); assert.equal(result.clinicBreakdown.length,3);
+  const financial = await ClinicService.getClinicFinancialSummary(f.owner.id);
+  assert.equal(financial.walletCurrency,"EGP"); assert.equal(financial.totalEarnings,100);
+  assert.equal(financial.consultationTotalsByCountry.length,3);
+  assert.deepEqual(await wallet(f.owner.id),balanceBeforeReads);
+  require('node:fs').writeFileSync('tmp/mismatch-finance-fixture.json',JSON.stringify({ownerId:f.owner.id,clinicId:f.clinic.id}));
+});
+
+test("legacy and managed status filters separate manual no-show, automatic unresolved and doctor absence", async () => {
+  const f=await fixture(); const b=await BookingService.createBooking(f.patient.id,f.payload);
+  const actor={id:f.owner.id,role:"CLINIC"};
+  for(const [patch, expected] of [
+    [{status:"NOT_SHOW",absenceType:null,noShowReason:null,cancellationReason:null},"PATIENT_NO_SHOW"],
+    [{status:"NOT_SHOW",absenceType:null,noShowReason:"Auto-settled: Neglected (no arrival recorded). Old worker",cancellationReason:null},"AUTO_UNRESOLVED"],
+    [{status:"NOT_SHOW",absenceType:"AUTO_UNRESOLVED",noShowReason:null,cancellationReason:null},"AUTO_UNRESOLVED"],
+    [{status:"CANCELLED",absenceType:"DOCTOR_ABSENT",noShowReason:null,cancellationReason:"Doctor absent"},"DOCTOR_ABSENT"],
+  ]) {
+    await db.bookingAppointment.update({where:{id:b.id},data:patch});
+    const managed=await ops.list(actor,{status:expected});
+    assert.equal(managed.data[0]?.displayStatus,expected);
+    const legacy=await BookingService.getBookings(actor.id,actor.role,{status:expected,limit:25});
+    assert.equal(legacy.data[0]?.displayStatus,expected);
+    const managerHistory=await ClinicService.getManagerBookingHistory(actor.id,{status:expected},{limit:25});
+    const ownerHistory=await ClinicService.getBookingHistory(actor.id,{status:expected},{limit:25});
+    assert.equal(managerHistory.data[0]?.displayStatus,expected);
+    assert.equal(ownerHistory.data[0]?.displayStatus,expected);
+    const other=await ops.list(actor,{status:expected==="PATIENT_NO_SHOW"?"AUTO_UNRESOLVED":"PATIENT_NO_SHOW"});
+    assert.equal(other.data.length,0);
+  }
+  await db.bookingAppointment.update({where:{id:b.id},data:{bookedFor:'FAMILY',familyMemberName:'Browser Family Attendee',familyMemberRelation:'Sister'}});
+  require('node:fs').writeFileSync('tmp/mismatch-status-fixture.json',JSON.stringify({ownerId:f.owner.id,bookingId:b.id}));
+});
+
+test("overview uses each clinic calendar across midnight, including doctor working at multiple clinics", async()=>{
+  const east=await fixture(),west=await fixture();
+  await db.clinic.update({where:{id:west.clinic.id},data:{timezone:"America/New_York"}});
+  const a=await BookingService.createBooking(east.patient.id,east.payload),b=await BookingService.createBooking(west.patient.id,west.payload);
+  await db.bookingAppointment.update({where:{id:a.id},data:{consultDate:new Date("2030-01-02T00:00:00Z")}});
+  await db.bookingAppointment.update({where:{id:b.id},data:{consultDate:new Date("2030-01-01T00:00:00Z")}});
+  await withClock(Date.parse("2030-01-01T23:30:00Z"),async()=>{
+    const view=await history.overview({id:"phase1-doctor-user",role:"DOCTOR"});
+    assert.equal(view.todayCount,2);
+    assert.equal(view.clinicLocalDates.find(c=>c.clinicId===east.clinic.id).date,"2030-01-02");
+    assert.equal(view.clinicLocalDates.find(c=>c.clinicId===west.clinic.id).date,"2030-01-01");
+    assert.ok(view.upcoming.some(row=>row.id===a.id)); assert.ok(view.upcoming.some(row=>row.id===b.id));
+  });
+});

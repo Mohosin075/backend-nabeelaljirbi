@@ -1,6 +1,7 @@
 import ApiError from "../../../errors/ApiErrors";
 import { money } from "../../../utils/money";
 import { getAppointmentStartUTC } from "../../../utils/timezoneHelper";
+import { patientNoShowWhere, automaticUnresolvedWhere } from "../../../utils/bookingDisplay";
 
 export const commonFields = [
   "fullName",
@@ -233,7 +234,10 @@ export function bookingFilters(input: any, now = new Date()): any {
   else if (query.shift === "morning") where.startTime = { lt: "13:00" };
   else if (query.shift === "evening") where.startTime = { gte: "13:00" };
   if (query.status === "DOCTOR_ABSENT") where.absenceType = "DOCTOR_ABSENT";
-  else if (query.status === "PATIENT_NO_SHOW") where.status = "NOT_SHOW";
+  else if (["PATIENT_NO_SHOW", "AUTO_UNRESOLVED"].includes(query.status)) {
+    where.status = "NOT_SHOW";
+    where.AND = [...(where.AND || []), query.status === "AUTO_UNRESOLVED" ? automaticUnresolvedWhere : patientNoShowWhere];
+  }
   else if (query.status && query.status !== "ALL") {
     if (
       ![
