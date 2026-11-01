@@ -16,15 +16,25 @@ export const corsOptions = {
     // Allow requests with no origin (like mobile apps, curl, server-to-server)
     if (!origin) return callback(null, true);
 
+    const envOrigins = (process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGIN || "")
+      .split(",")
+      .map((o) => o.trim())
+      .filter(Boolean);
+
     const allowedOrigins = [
       "https://dashboard.salamaapp.ly",
       "http://localhost:3000",
       "http://localhost:3001",
       "http://localhost:7028",
+      "http://127.0.0.1:7028",
+      "http://127.0.0.1:3000",
       "http://10.10.26.208:7028",
       "http://92.205.234.176:7028",
       "https://92.205.234.176:7028",
-    ];
+      process.env.FRONTEND_URL,
+      process.env.CORS_ORIGIN,
+      ...envOrigins,
+    ].filter(Boolean) as string[];
 
     if (
       allowedOrigins.includes(origin) ||

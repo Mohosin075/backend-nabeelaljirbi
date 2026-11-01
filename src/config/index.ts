@@ -6,6 +6,7 @@ dotenv.config({ path: path.join(process.cwd(), ".env") });
 export default {
   env: process.env.NODE_ENV,
   port: process.env.PORT || 8003,
+  cors_origin: process.env.CORS_ORIGIN || "http://localhost:7028",
   url: {
     frontend_url: process.env.FRONTEND_URL,
     backend_url: process.env.BACKEND_URL,
