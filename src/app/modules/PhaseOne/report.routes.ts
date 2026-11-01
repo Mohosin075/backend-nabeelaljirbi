@@ -65,13 +65,14 @@ router.get(
       },
       { isolationLevel: "RepeatableRead", timeout: 30000 },
     );
+    const isArabic = req.query.lang === "ar";
     const table: ReportTable = {
       title:
         kind === "bookings"
-          ? "Booking and Fee Report"
+          ? (isArabic ? "تقرير الحجوزات والرسوم" : "Booking and Fee Report")
           : kind === "payouts"
-            ? "Settlements and Withdrawal Requests"
-            : "Wallet Ledger Report",
+            ? (isArabic ? "طلبات التسوية والسحب" : "Settlements and Withdrawal Requests")
+            : (isArabic ? "تقرير دفتر الأستاذ للمحفظة" : "Wallet Ledger Report"),
       filters: `Generated ${new Date().toISOString()} | ${
         Object.entries(req.query)
           .filter(([key]) => !["page", "limit"].includes(key))
@@ -80,37 +81,70 @@ router.get(
       }`,
       columns:
         kind === "bookings"
-          ? [
-              "Date / Serial",
-              "Status / Model",
-              "Clinic / Country",
-              "Doctor",
-              "Attendee / Account contact",
-              "Consultation",
-              "Patient fee",
-              "Clinic fee",
-            ]
+          ? (isArabic
+              ? [
+                  "التاريخ / الرقم التسلسلي",
+                  "الحالة / النموذج",
+                  "العيادة / الدولة",
+                  "الطبيب",
+                  "المريض / جهة الاتصال",
+                  "الاستشارة",
+                  "رسوم المريض",
+                  "رسوم العيادة",
+                ]
+              : [
+                  "Date / Serial",
+                  "Status / Model",
+                  "Clinic / Country",
+                  "Doctor",
+                  "Attendee / Account contact",
+                  "Consultation",
+                  "Patient fee",
+                  "Clinic fee",
+                ])
           : kind === "payouts"
-            ? [
-                "Request",
-                "Requested / Paid",
-                "Recipient / Phone",
-                "Status / Method",
-                "Country",
-                "Amount",
-                "Reference",
-                "Receipt",
-              ]
-            : [
-                "Date",
-                "Record ID",
-                "Booking ID",
-                "Type",
-                "Direction",
-                "Amount",
-                "Reference",
-                "Receipt",
-              ],
+            ? (isArabic
+                ? [
+                    "الطلب",
+                    "تاريخ الطلب / الدفع",
+                    "المستلم / الهاتف",
+                    "الحالة / طريقة الدفع",
+                    "الدولة",
+                    "المبلغ",
+                    "المرجع",
+                    "الإيصال",
+                  ]
+                : [
+                    "Request",
+                    "Requested / Paid",
+                    "Recipient / Phone",
+                    "Status / Method",
+                    "Country",
+                    "Amount",
+                    "Reference",
+                    "Receipt",
+                  ])
+            : (isArabic
+                ? [
+                    "التاريخ",
+                    "معرف السجل",
+                    "معرف الحجز",
+                    "النوع",
+                    "الاتجاه",
+                    "المبلغ",
+                    "المرجع",
+                    "الإيصال",
+                  ]
+                : [
+                    "Date",
+                    "Record ID",
+                    "Booking ID",
+                    "Type",
+                    "Direction",
+                    "Amount",
+                    "Reference",
+                    "Receipt",
+                  ]),
       rows: records.map((row) =>
         kind === "bookings"
           ? [

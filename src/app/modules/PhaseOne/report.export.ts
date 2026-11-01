@@ -66,25 +66,28 @@ export function pdfReport(table: ReportTable): Promise<Buffer> {
       cell = width / table.columns.length;
     let y = 32;
     const header = () => {
+      const titleArabic = /[\u0600-\u06ff]/.test(table.title);
       doc
-        .font("Helvetica-Bold")
+        .font(titleArabic ? "Arabic" : "Helvetica-Bold")
         .fontSize(16)
         .fillColor("#123c55")
-        .text(table.title, 32, 28, { width });
+        .text(table.title, 32, 28, { width, align: titleArabic ? "right" : "left" });
+      const filtersArabic = /[\u0600-\u06ff]/.test(table.filters);
       doc
-        .font("Helvetica")
+        .font(filtersArabic ? "Arabic" : "Helvetica")
         .fontSize(8)
         .fillColor("#425466")
-        .text(table.filters, 32, 53, { width, height: 36, ellipsis: true });
+        .text(table.filters, 32, 53, { width, height: 36, ellipsis: true, align: filtersArabic ? "right" : "left" });
       y = 96;
       doc.rect(32, y, width, 32).fill("#123c55");
-      table.columns.forEach((label, i) =>
+      table.columns.forEach((label, i) => {
+        const colArabic = /[\u0600-\u06ff]/.test(label);
         doc
           .fillColor("white")
-          .font("Helvetica-Bold")
+          .font(colArabic ? "Arabic" : "Helvetica-Bold")
           .fontSize(8)
-          .text(label, 37 + cell * i, y + 6, { width: cell - 10, height: 22 }),
-      );
+          .text(label, 37 + cell * i, y + 6, { width: cell - 10, height: 22, align: colArabic ? "right" : "left" });
+      });
       y += 32;
     };
     header();
