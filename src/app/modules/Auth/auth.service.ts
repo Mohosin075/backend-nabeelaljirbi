@@ -270,20 +270,20 @@ const deleteAccout = async (userId: string) => {
 
 const adminLogin = async (payload: { email: string; password: string }) => {
   const { email, password } = payload;
-  const cleanEmail = email.trim();
+  const cleanInput = email.trim();
 
   const user = await prisma.user.findFirst({
     where: {
       role: { in: ['ADMIN', 'CLINIC', 'MANAGER', 'DOCTOR'] },
-      email: {
-        equals: cleanEmail,
-        mode: 'insensitive',
-      },
+      OR: [
+        { email: { equals: cleanInput, mode: 'insensitive' } },
+        { phoneNumber: cleanInput },
+      ],
     },
   });
 
   if (!user) {
-    throw new ApiError(httpStatus.NOT_FOUND, "Account not found with this email");
+    throw new ApiError(httpStatus.NOT_FOUND, "Account not found with provided email or phone");
   }
 
   if (user.banned || user.status !== 'ACTIVE') {
