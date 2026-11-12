@@ -1,5 +1,6 @@
+import { getPrivateFileUrl } from '../uploadFile/file.upload';
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { getClinicCalendarDate } from "../../../utils/timezoneHelper";
+import { bookingCalendar } from "../../../utils/bookingCalendar";
 import { bookingDisplayStatus } from "../../../utils/bookingDisplay";
 import ApiError from "../../../errors/ApiErrors";
 import { bookingFilters, pageOptions } from "./phaseOne.policy";
@@ -121,7 +122,10 @@ export function historyOperations(db: PrismaClient) {
           },
         })
       : [];
-    const receipts = new Map(settlements.map((s) => [s.id, s]));
+    const receipts = new Map(await Promise.all(settlements.map(async s => [s.id, {
+      ...s, receiptUrl: s.receiptUrl?.startsWith('settlement-receipts/')
+        ? await getPrivateFileUrl(s.receiptUrl) : s.receiptUrl,
+    }] as const)));
     return {
       data: rows.map((row) => {
         const settlementId = row.id.match(/^settlement:(.+):debit$/)?.[1];
@@ -198,16 +202,18 @@ export function historyOperations(db: PrismaClient) {
       db.settlement.count({ where }),
     ]);
     return {
-      data: data.map((row) => ({
+      data: await Promise.all(data.map(async (row) => ({
         ...row,
         ...(actor.role === "ADMIN" ? {} : { notes: undefined }),
+        receiptKey: row.receiptUrl?.startsWith('settlement-receipts/') ? row.receiptUrl : null,
+        receiptUrl: row.receiptUrl?.startsWith('settlement-receipts/') ? await getPrivateFileUrl(row.receiptUrl) : row.receiptUrl,
         relatedTransactions: {
           type: "PAYOUT_WITHDRAWAL",
           targetReference: row.reference || row.settlementNumber,
           payoutChannel: row.payoutMethod || "HISTORICAL_UNSPECIFIED",
           status: row.status,
         },
-      })),
+      }))),
       meta: { page, limit, total },
     };
   };
@@ -302,14 +308,7 @@ export function historyOperations(db: PrismaClient) {
     if (!["DOCTOR", "CLINIC", "MANAGER"].includes(actor.role))
       throw new ApiError(403, "Role dashboard access denied");
     const scope = await bookingScope(db, actor);
-    const now = new Date(Date.now());
-    const scopedClinics = await db.bookingAppointment.findMany({
-      where: scope, distinct: ["clinicId"],
-      select: { clinicId: true, clinic: { select: { timezone: true } } },
-    });
-    const clinicDays = scopedClinics.map(row => ({ clinicId: row.clinicId, date: getClinicCalendarDate(now, row.clinic.timezone) }));
-    const todayScope = { OR: clinicDays.map(({ clinicId, date }) => ({ clinicId, consultDate: { gte: date, lt: new Date(date.getTime() + 86400000) } })) };
-    const upcomingScope = { OR: clinicDays.map(({ clinicId, date }) => ({ clinicId, consultDate: { gte: date } })) };
+    const { clinicDays, todayScope, upcomingScope } = await bookingCalendar(db, scope);
     const period = historyDateRange(query);
     const journalWhere = {
       userId: actor.id,

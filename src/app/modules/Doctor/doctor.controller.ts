@@ -181,7 +181,7 @@ const cancelJoinRequest = catchAsync(async (req: Request, res: Response) => {
 const getAppointments = catchAsync(async (req: Request, res: Response) => {
   const userId = req.user?.id;
   const options = pick(req.query, paginationFields);
-  const filters = pick(req.query, ["searchTerm", "status", "consultDate"]);
+  const filters = pick(req.query, ["searchTerm", "status", "consultDate", "today"]);
 
   const result = await DoctorService.getAppointments(userId!, filters, options);
 
@@ -313,7 +313,13 @@ const getReconciliationReports = catchAsync(async (req: Request, res: Response) 
   });
 });
 
+const leaveClinic = catchAsync(async (req: Request, res: Response) => {
+  const result = await DoctorService.leaveClinic(req.user!.id, req.params.clinicId);
+  sendResponse(res, { statusCode: httpStatus.OK, success: true, message: 'Clinic relationship ended', data: result });
+});
+
 export const DoctorController = {
+  leaveClinic,
   updateDoctorProfile,
   getDoctorProfile,
   addWorkingHours,

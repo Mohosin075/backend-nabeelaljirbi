@@ -71,6 +71,7 @@ const {
   BookingService,
 } = require("../src/app/modules/Booking/booking.service");
 const { ClinicService } = require("../src/app/modules/Clinic/clinic.service");
+const { DoctorService } = require("../src/app/modules/Doctor/doctor.service");
 const {
   PatientController,
 } = require("../src/app/modules/Patient/patient.controller");
@@ -849,6 +850,9 @@ test("overview uses each clinic calendar across midnight, including doctor worki
   await withClock(Date.parse("2030-01-01T23:30:00Z"),async()=>{
     const view=await history.overview({id:"phase1-doctor-user",role:"DOCTOR"});
     assert.equal(view.todayCount,2);
+    const appointments = await DoctorService.getAppointments('phase1-doctor-user', { today: 'true' }, { limit: 25 });
+    assert.equal(appointments.statistics.todayCount, 2);
+    assert.equal(appointments.meta.total, 2);
     assert.equal(view.clinicLocalDates.find(c=>c.clinicId===east.clinic.id).date,"2030-01-02");
     assert.equal(view.clinicLocalDates.find(c=>c.clinicId===west.clinic.id).date,"2030-01-01");
     assert.ok(view.upcoming.some(row=>row.id===a.id)); assert.ok(view.upcoming.some(row=>row.id===b.id));

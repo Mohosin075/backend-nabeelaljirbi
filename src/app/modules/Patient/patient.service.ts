@@ -253,10 +253,12 @@ const getPopularDoctors = async (
   // 2️⃣ Fetch doctors
   const doctors = await prisma.user.findMany({
     where: whereConditions,
-    include: {
+    select: {
+      id: true, fullName: true, country: true, city: true, profileImage: true,
       doctor: {
-        include: {
-          clinic: { include: { user: true } },
+        select: {
+          id: true, speciality: true, experience: true, consultFee: true, badgeActive: true,
+          clinic: { select: { clinicName: true, adminVerified: true, isVisible: true, user: { select: { status: true, banned: true } } } },
           doctorClinics: {
             where: {
               isActive: true,
@@ -268,7 +270,7 @@ const getPopularDoctors = async (
                 },
               },
             },
-            include: { clinic: true },
+            select: { clinic: { select: { clinicName: true } } },
           },
         },
       },

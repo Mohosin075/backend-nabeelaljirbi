@@ -153,3 +153,15 @@ test('legacy settlement amounts are never silently rounded to a different paid a
   assert.equal(f.state().settlement.status, 'APPROVED');
   assert.equal(f.state().journals.length, 0);
 });
+
+
+test('uploaded receipts use a durable settlement-scoped key and reject keys from another settlement', async () => {
+  const good = fixture();
+  await good.operations.update('s1', { status: 'COMPLETED', reference: 'BANK-RECEIPT', receiptUrl: 'settlement-receipts/s1/receipt.pdf' }, admin);
+  assert.equal(good.state().settlement.receiptUrl, 'settlement-receipts/s1/receipt.pdf');
+  assert.equal(good.state().journals.length, 1);
+  const wrong = fixture();
+  await assert.rejects(wrong.operations.update('s1', { status: 'COMPLETED', reference: 'BANK-RECEIPT', receiptUrl: 'settlement-receipts/s2/receipt.pdf' }, admin), /HTTP/);
+  assert.equal(wrong.state().owner.wallet, 100);
+  assert.equal(wrong.state().journals.length, 0);
+});

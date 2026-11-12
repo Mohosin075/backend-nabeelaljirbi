@@ -120,3 +120,15 @@ test('prepaid-card API supports filtered pages above 500 without changing cards'
   const next=await fetch(base.replace('/phase-one','/prepaid-card?limit=500&page=2&amount=777'),{headers:{Authorization:'Bearer phase1-admin'}});
   const second=await next.json();assert.equal(second.data.data.length,150);assert.equal(second.meta.total,650);
 });
+
+
+test('finance account lookup searches phone numbers and rejects clinic and staff access', async () => {
+  const target = await db.user.findUnique({ where: { id: 'phase1-clinic-user' } });
+  const response = await request('/finance-accounts?search=' + encodeURIComponent(target.phoneNumber), 'phase1-admin');
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.ok(body.data.some(account => account.id === target.id && account.phoneNumber === target.phoneNumber));
+  assert.ok(body.data.every(account => !('password' in account) && !('fcmToken' in account)));
+  assert.equal((await request('/finance-accounts?search=123', 'phase1-clinic-user')).status, 403);
+  assert.equal((await request('/finance-accounts?search=1', 'phase1-admin')).status, 400);
+});

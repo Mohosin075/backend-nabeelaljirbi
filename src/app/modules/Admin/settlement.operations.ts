@@ -101,7 +101,7 @@ export function settlementOperations(db: PrismaClient) {
       if (status === "COMPLETED" && (!receiptUrl?.trim() || !reference?.trim())) {
         throw new ApiError(400, "Payment reference and receipt are required before marking a settlement paid");
       }
-      if (receiptUrl) {
+      if (receiptUrl && !receiptUrl.startsWith(`settlement-receipts/${id}/`)) {
         try {
           const url = new URL(receiptUrl);
           if (!["http:", "https:"].includes(url.protocol)) throw new Error();

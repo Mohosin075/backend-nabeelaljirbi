@@ -1,3 +1,4 @@
+import { bookingCalendar } from "../../../utils/bookingCalendar";
 import { assertProfileEditable } from "../PhaseOne/phaseOne.policy";
 import { BookingStatus, Prisma, UserRole, WeekDay } from "@prisma/client";
 import httpStatus from "http-status";
@@ -48,6 +49,8 @@ const getDoctorProfile = async (userId: string) => {
           verificationAdminNote: true,
           clinic: {
             select: {
+              id: true,
+              user: { select: { city: true, address: true } },
               logo: true,
               clinicName: true,
               about: true,
@@ -70,6 +73,7 @@ const getDoctorProfile = async (userId: string) => {
                   clinicName: true,
                   logo: true,
                   location: true,
+                  user: { select: { city: true, address: true } },
                   contactPhone: true,
                 },
               },
@@ -391,11 +395,13 @@ const getAppointments = async (
     throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
   }
 
+  const { todayScope, futureScope } = await bookingCalendar(prisma, { doctorId: doctor.id });
   const { searchTerm, ...filterData } = filters;
 
   const andConditions: Prisma.BookingAppointmentWhereInput[] = [];
 
   andConditions.push({ doctorId: doctor.id });
+  if (filterData.today === "true") andConditions.push(todayScope);
 
   if (searchTerm) {
     andConditions.push({
@@ -454,7 +460,7 @@ const getAppointments = async (
           },
         },
       },
-      clinic: true,
+      clinic: { include: { user: { select: { city: true, address: true } } } },
       doctorRatings: {
         select: {
           rating: true,
@@ -472,12 +478,10 @@ const getAppointments = async (
     where: whereConditions,
   });
 
-  const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
-  const dayEnd = new Date(dayStart); dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
   const [totalBookings, todayCount, upcomingCount, completedCount, earnings] = await Promise.all([
     prisma.bookingAppointment.count({ where: { doctorId: doctor.id } }),
-    prisma.bookingAppointment.count({ where: { doctorId: doctor.id, consultDate: { gte: dayStart, lt: dayEnd } } }),
-    prisma.bookingAppointment.count({ where: { doctorId: doctor.id, consultDate: { gte: dayEnd }, status: { in: ["PENDING", "CONFIRMED"] } } }),
+    prisma.bookingAppointment.count({ where: { doctorId: doctor.id, ...todayScope } }),
+    prisma.bookingAppointment.count({ where: { doctorId: doctor.id, ...futureScope, status: { in: ["PENDING", "CONFIRMED"] } } }),
     prisma.bookingAppointment.count({ where: { doctorId: doctor.id, status: "COMPLETE" } }),
     prisma.bookingAppointment.aggregate({ where: { doctorId: doctor.id, status: "COMPLETE" }, _sum: { consultFee: true } }),
   ]);
@@ -1077,7 +1081,38 @@ const getReconciliationReports = async (
   };
 };
 
+const leaveClinic = async (userId: string, clinicId: string) => {
+  return prisma.$transaction(
+    async (tx) => {
+      const doctor = await tx.doctor.findUnique({ where: { userId } });
+      if (!doctor) throw new ApiError(404, "Doctor profile not found");
+      // Retain existing appointments and financial history when a relationship ends.
+      await tx.doctorClinic.updateMany({
+        where: { doctorId: doctor.id, clinicId },
+        data: { isActive: false },
+      });
+      await tx.workingSlot.updateMany({
+        where: { workingDay: { doctorId: doctor.id, clinicId } },
+        data: { isActive: false },
+      });
+      if (doctor.clinicId === clinicId) {
+        const next = await tx.doctorClinic.findFirst({
+          where: { doctorId: doctor.id, isActive: true },
+          orderBy: { joinedAt: "asc" },
+        });
+        await tx.doctor.update({
+          where: { id: doctor.id },
+          data: { clinicId: next?.clinicId || null },
+        });
+      }
+      return { clinicId };
+    },
+    { isolationLevel: "Serializable" }
+  );
+};
+
 export const DoctorService = {
+  leaveClinic,
   updateDoctorProfile,
   getDoctorProfile,
   addWorkingHours,

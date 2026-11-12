@@ -168,3 +168,38 @@ test('actual booking creation snapshots clinic-country rules for both models in 
     }
   }
 });
+
+
+test('doctor can leave a clinic repeatedly while retaining history and disabling new booking slots', async () => {
+  const stamp = Date.now();
+  const user = await db.user.create({ data: { phoneNumber: '+leave' + stamp, role: 'DOCTOR', doctor: { create: { clinicId: clinic.id } } }, include: { doctor: true } });
+  const second = await db.user.create({ data: { phoneNumber: '+leave-clinic' + stamp, role: 'CLINIC', clinic: { create: { clinicName: 'Other clinic' } } }, include: { clinic: true } });
+  await db.doctorClinic.createMany({ data: [
+    { doctorId: user.doctor.id, clinicId: clinic.id }, { doctorId: user.doctor.id, clinicId: second.clinic.id },
+  ] });
+  const day = await db.workingDay.create({ data: { doctorId: user.doctor.id, clinicId: clinic.id, day: 'MONDAY', slots: { create: { startTime: '09:00', endTime: '10:00', capacity: 5 } } }, include: { slots: true } });
+  const appointment = await db.bookingAppointment.create({ data: { patientId: patient.patient.id, doctorId: user.doctor.id, clinicId: clinic.id, consultDate: new Date('2030-01-01'), serialNumber: 701, status: 'CONFIRMED' } });
+  await DoctorService.leaveClinic(user.id, clinic.id);
+  await DoctorService.leaveClinic(user.id, clinic.id);
+  assert.equal((await db.doctorClinic.findUnique({ where: { doctorId_clinicId: { doctorId: user.doctor.id, clinicId: clinic.id } } })).isActive, false);
+  assert.equal((await db.workingSlot.findUnique({ where: { id: day.slots[0].id } })).isActive, false);
+  assert.equal((await db.doctor.findUnique({ where: { id: user.doctor.id } })).clinicId, second.clinic.id);
+  assert.equal((await db.bookingAppointment.findUnique({ where: { id: appointment.id } })).status, 'CONFIRMED');
+  await DoctorService.leaveClinic(user.id, second.clinic.id);
+  assert.equal((await db.doctor.findUnique({ where: { id: user.doctor.id } })).clinicId, null);
+});
+
+test('simple booking filters include legacy statuses and keep doctor no-show separate from cancellations', async () => {
+  const date = new Date('2031-03-02');
+  const ids = {};
+  for (const status of ['PENDING', 'NOT_UPDATED', 'ARRIVED', 'INPROGRESS', 'CANCELLED', 'REJECTED', 'NOT_SHOW']) {
+    ids[status] = (await db.bookingAppointment.create({ data: { patientId: patient.patient.id, doctorId: doctor.id, clinicId: clinic.id, consultDate: date, serialNumber: 800, status } })).id;
+  }
+  const absent = await db.bookingAppointment.create({ data: { patientId: patient.patient.id, doctorId: doctor.id, clinicId: clinic.id, consultDate: date, serialNumber: 801, status: 'CANCELLED', absenceType: 'DOCTOR_ABSENT' } });
+  const list = async status => (await ops.list({ id: owner.id, role: 'CLINIC' }, { date: '2031-03-02', statusView: 'simple', status })).data.map(row => row.id).sort();
+  assert.deepEqual(await list('PENDING'), [ids.PENDING, ids.NOT_UPDATED].sort());
+  assert.deepEqual(await list('ARRIVED'), [ids.ARRIVED, ids.INPROGRESS].sort());
+  assert.deepEqual(await list('CANCELLED'), [ids.CANCELLED, ids.REJECTED].sort());
+  assert.deepEqual(await list('DOCTOR_ABSENT'), [absent.id]);
+  assert.deepEqual(await list('PATIENT_NO_SHOW'), [ids.NOT_SHOW]);
+});

@@ -51,4 +51,36 @@ router.patch(
   "/receptionists/:id",
   run((req) => operations.staffStatus(req.user, req.params.id, req.body)),
 );
+router.get(
+  "/finance-accounts",
+  run(async (req) => {
+    requireAdmin(req.user, ["SUPER_ADMIN", "FINANCE", "READ_ONLY"]);
+    const search = String(req.query.search || "").trim();
+    if (search.length < 3)
+      throw new ApiError(400, "Enter at least three characters of a phone number or name");
+    return prisma.user.findMany({
+      where: {
+        status: "ACTIVE",
+        banned: false,
+        role: { in: ["PATIENT", "CLINIC", "DOCTOR"] },
+        OR: [
+          { phoneNumber: { contains: search } },
+          { fullName: { contains: search, mode: "insensitive" } },
+        ],
+      },
+      select: {
+        id: true,
+        fullName: true,
+        phoneNumber: true,
+        role: true,
+        country: true,
+        wallet: true,
+        frozenWallet: true,
+      },
+      take: 25,
+      orderBy: [{ fullName: "asc" }, { id: "asc" }],
+    });
+  })
+);
+
 export const AccountRoutes = router;

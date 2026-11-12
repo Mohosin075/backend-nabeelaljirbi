@@ -96,4 +96,6 @@ router.get(
   DoctorController.getReconciliationReports
 );
 
+router.delete('/clinics/:clinicId', auth(UserRole.DOCTOR), DoctorController.leaveClinic);
+
 export const DoctorRoutes = router;
