@@ -425,6 +425,7 @@ const getManagerBookingHistory = catchAsync(
     const filters = pick(req.query, [
       "searchTerm",
       "status",
+      "statusView",
       "doctorId",
       "consultDate",
       "clinicId",

@@ -296,6 +296,7 @@ const getReconciliationReports = catchAsync(async (req: Request, res: Response) 
     "time",
     "shift",
     "status",
+    "statusView",
     "searchTerm",
   ]);
 

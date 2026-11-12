@@ -1,3 +1,5 @@
+import { bookingCalendar } from "../../../utils/bookingCalendar";
+import { getClinicCalendarDate } from "../../../utils/timezoneHelper";
 import { reconciliationGroups } from "../../../utils/reconciliation";
 import { bookingCurrencyCode } from "../../../utils/money";
 import { bookingDisplayStatus } from "../../../utils/bookingDisplay";
@@ -697,7 +699,7 @@ const getManagerBookingHistory = async (
   }
 
   if (filterData.status) {
-    andConditions.push(bookingFilters({ status: filterData.status }));
+    andConditions.push(bookingFilters({ status: filterData.status, statusView: filterData.statusView }));
   }
 
   if (filterData.doctorId) {
@@ -838,16 +840,12 @@ const getClinicManagerStats = async (userId: string) => {
     };
   }
 
-  // 🌍 UTC HANDLING: Always use UTC for date boundaries to ensure consistent
-  // statistics calculation regardless of server timezone
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setUTCDate(today.getUTCDate() + 1);
 
   const clinicWhere: Prisma.BookingAppointmentWhereInput = clinicId
     ? { clinicId }
     : {};
+
+  const { todayScope } = await bookingCalendar(prisma, clinicWhere);
 
   const [
     totalAppointment,
@@ -866,10 +864,7 @@ const getClinicManagerStats = async (userId: string) => {
     prisma.bookingAppointment.count({
       where: {
         ...clinicWhere,
-        consultDate: {
-          gte: today,
-          lt: tomorrow,
-        },
+        ...todayScope,
         status: {
           in: [
             BookingStatus.CONFIRMED,
@@ -1214,16 +1209,12 @@ const getClinicStats = async (userId: string) => {
   }
 
   if (!clinicId) throw new ApiError(403, "Clinic membership is required");
-  // 🌍 UTC HANDLING: Always use UTC for date boundaries to ensure consistent
-  // statistics calculation regardless of server timezone
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setUTCDate(today.getUTCDate() + 1);
 
   const whereClinic: Prisma.BookingAppointmentWhereInput = clinicId
     ? { clinicId }
     : {};
+
+  const { todayScope, futureScope } = await bookingCalendar(prisma, whereClinic);
 
   const [
     todayAppointment,
@@ -1239,10 +1230,7 @@ const getClinicStats = async (userId: string) => {
     prisma.bookingAppointment.count({
       where: {
         ...whereClinic,
-        consultDate: {
-          gte: today,
-          lt: tomorrow,
-        },
+        ...todayScope,
         status: {
           in: [
             BookingStatus.CONFIRMED,
@@ -1300,7 +1288,7 @@ const getClinicStats = async (userId: string) => {
   ]);
 
   const [upcomingAppointment, completedMoney] = await Promise.all([
-    prisma.bookingAppointment.count({ where: { clinicId: clinicId!, consultDate: { gte: tomorrow }, status: { in: ["PENDING", "CONFIRMED"] } } }),
+    prisma.bookingAppointment.count({ where: { clinicId: clinicId!, ...futureScope, status: { in: ["PENDING", "CONFIRMED"] } } }),
     user.role === "CLINIC" ? prisma.bookingAppointment.aggregate({ where: { clinicId: clinicId!, status: "COMPLETE" }, _sum: { consultFee: true, clinicServiceFee: true } }) : null,
   ]);
   return {
@@ -1405,10 +1393,7 @@ const getClinicDoctor = async (
     },
   });
 
-  // 🌍 UTC HANDLING: Always use UTC for today's date to ensure consistent
-  // calculations regardless of server timezone
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
+  const { upcomingScope } = await bookingCalendar(prisma, { clinicId: clinic.id });
 
   // 3️⃣ Calculate rating & weighted score & counts
   const doctorsWithRating = await Promise.all(
@@ -1422,13 +1407,14 @@ const getClinicDoctor = async (
 
       const [totalConsult, upcomingConsult] = await Promise.all([
         prisma.bookingAppointment.count({
-          where: { doctorId: doc.doctor?.id },
+          where: { doctorId: doc.doctor?.id, clinicId: clinic.id },
         }),
         prisma.bookingAppointment.count({
           where: {
             doctorId: doc.doctor?.id,
-            consultDate: { gte: today },
-            status: { not: BookingStatus.CANCELLED },
+            clinicId: clinic.id,
+            ...upcomingScope,
+            status: { in: ["PENDING", "CONFIRMED", "ARRIVED", "INPROGRESS"] },
           },
         }),
       ]);
@@ -1592,10 +1578,8 @@ const getClinicManagerDoctor = async (
     },
   });
 
-  // 🌍 UTC HANDLING: Always use UTC for today's date to ensure consistent
-  // calculations regardless of server timezone
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
+  const bookingScope = clinicId ? { clinicId } : {};
+  const { upcomingScope } = await bookingCalendar(prisma, bookingScope);
 
   // 3️⃣ Calculate rating & weighted score & counts
   const doctorsWithRating = await Promise.all(
@@ -1609,13 +1593,14 @@ const getClinicManagerDoctor = async (
 
       const [totalConsult, upcomingConsult] = await Promise.all([
         prisma.bookingAppointment.count({
-          where: { doctorId: doc.doctor?.id },
+          where: { doctorId: doc.doctor?.id, ...bookingScope },
         }),
         prisma.bookingAppointment.count({
           where: {
             doctorId: doc.doctor?.id,
-            consultDate: { gte: today },
-            status: { not: BookingStatus.CANCELLED },
+            ...bookingScope,
+            ...upcomingScope,
+            status: { in: ["PENDING", "CONFIRMED", "ARRIVED", "INPROGRESS"] },
           },
         }),
       ]);
@@ -1771,10 +1756,7 @@ const getDoctorAppointments = async (
 
   const clinic = { clinic: clinicRecord };
 
-  // 🌍 UTC HANDLING: Always use UTC for today's date to ensure consistent
-  // calculations regardless of server timezone
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
+  const { upcomingScope } = await bookingCalendar(prisma, { clinicId: clinicRecord.id });
 
   // 2️⃣ Calculate rating, consult counts
   const ratings = doctorData.user.ratingsReceived.map((r) => r.rating);
@@ -1786,13 +1768,14 @@ const getDoctorAppointments = async (
 
   const [totalConsult, upcomingConsult] = await Promise.all([
     prisma.bookingAppointment.count({
-      where: { doctorId: doctorData.id },
+      where: { doctorId: doctorData.id, clinicId: clinicRecord.id },
     }),
     prisma.bookingAppointment.count({
       where: {
         doctorId: doctorData.id,
-        consultDate: { gte: today },
-        status: { not: BookingStatus.CANCELLED },
+        clinicId: clinicRecord.id,
+        ...upcomingScope,
+        status: { in: ["PENDING", "CONFIRMED", "ARRIVED", "INPROGRESS"] },
       },
     }),
   ]);
@@ -2662,8 +2645,10 @@ const getClinicFinancialSummary = async (userId: string) => {
     clinicUserId = user.manager[0].clinic.userId;
   }
 
-  const now = new Date();
+  const now = getClinicCalendarDate(new Date(Date.now()), user.clinic.timezone);
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+
+  const monthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
 
   const whereClinic: Prisma.BookingAppointmentWhereInput = clinicId
     ? { clinicId, status: BookingStatus.COMPLETE }
@@ -2674,7 +2659,7 @@ const getClinicFinancialSummary = async (userId: string) => {
     prisma.bookingAppointment.aggregate({
       where: {
         ...walletScope,
-        consultDate: { gte: monthStart },
+        consultDate: { gte: monthStart, lt: monthEnd },
       },
       _sum: {
         consultFee: true,

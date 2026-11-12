@@ -1,5 +1,8 @@
+import { bookingDisplayStatus } from "../../../utils/bookingDisplay";
+import { reconciliationGroups } from "../../../utils/reconciliation";
+import { bookingCurrencyCode } from "../../../utils/money";
 import { bookingCalendar } from "../../../utils/bookingCalendar";
-import { assertProfileEditable } from "../PhaseOne/phaseOne.policy";
+import { assertProfileEditable, bookingFilters } from "../PhaseOne/phaseOne.policy";
 import { BookingStatus, Prisma, UserRole, WeekDay } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
@@ -748,6 +751,7 @@ const getReconciliationReports = async (
     time?: string;
     shift?: "morning" | "evening" | "all";
     status?: string;
+    statusView?: string;
     searchTerm?: string;
   },
   options: IPaginationOptions
@@ -759,6 +763,7 @@ const getReconciliationReports = async (
     where: { userId },
     include: {
       clinic: true,
+      user: { select: { country: true } },
       doctorClinics: {
         where: { isActive: true },
         include: { clinic: true },
@@ -873,9 +878,7 @@ const getReconciliationReports = async (
 
   // 4. Status filter
   if (filters.status && filters.status.toUpperCase() !== "ALL") {
-    andConditions.push({
-      status: filters.status.toUpperCase() as BookingStatus,
-    });
+    andConditions.push(bookingFilters({ status: filters.status.toUpperCase(), statusView: filters.statusView }));
   }
 
   // 5. Search term
@@ -936,6 +939,8 @@ const getReconciliationReports = async (
       id: true,
       status: true,
       consultDate: true,
+      consultFee: true,
+      feeCountry: true,
       clinicId: true,
       clinic: {
         select: {
@@ -963,6 +968,8 @@ const getReconciliationReports = async (
       totalCount: number;
       completedCount: number;
       totalAmount: number;
+      country: string;
+      currency: string;
     }
   >();
   const dailySummaryMap = new Map<
@@ -972,6 +979,8 @@ const getReconciliationReports = async (
       totalCount: number;
       completedCount: number;
       totalAmount: number;
+      country: string;
+      currency: string;
     }
   >();
 
@@ -983,15 +992,20 @@ const getReconciliationReports = async (
       apt.status === "ARRIVED"
     )
       totalConfirmed++;
-    else if (apt.status === "CANCELLED") totalCancelled++;
+    else if (apt.status === "CANCELLED" || apt.status === "REJECTED") totalCancelled++;
     else if (apt.status === "NOT_SHOW") totalNoShow++;
-    else if (apt.status === "PENDING") totalPending++;
+    else if (apt.status === "PENDING" || apt.status === "NOT_UPDATED") totalPending++;
 
     // Clinic breakdown
+    const country = apt.feeCountry || 'HISTORICAL_UNSPECIFIED';
+    const currency = bookingCurrencyCode(apt.feeCountry) || 'Unspecified';
     const cId = apt.clinicId;
+    const clinicKey = cId + ':' + country;
     const cName = apt.clinic?.clinicName || "Unknown Clinic";
-    const existingClinic = clinicSummaryMap.get(cId) || {
+    const existingClinic = clinicSummaryMap.get(clinicKey) || {
       clinicId: cId,
+      country,
+      currency,
       clinicName: cName,
       logo: apt.clinic?.logo || null,
       totalCount: 0,
@@ -1001,16 +1015,19 @@ const getReconciliationReports = async (
     existingClinic.totalCount++;
     if (apt.status === "COMPLETE") {
       existingClinic.completedCount++;
-      existingClinic.totalAmount += consultFee;
+      existingClinic.totalAmount += apt.consultFee || 0;
     }
-    clinicSummaryMap.set(cId, existingClinic);
+    clinicSummaryMap.set(clinicKey, existingClinic);
 
     // Date breakdown
     const dateStr = apt.consultDate
       ? apt.consultDate.toISOString().split("T")[0]
       : "Unknown";
-    const existingDaily = dailySummaryMap.get(dateStr) || {
+    const dailyKey = dateStr + ':' + country;
+    const existingDaily = dailySummaryMap.get(dailyKey) || {
       date: dateStr,
+      country,
+      currency,
       totalCount: 0,
       completedCount: 0,
       totalAmount: 0,
@@ -1018,15 +1035,27 @@ const getReconciliationReports = async (
     existingDaily.totalCount++;
     if (apt.status === "COMPLETE") {
       existingDaily.completedCount++;
-      existingDaily.totalAmount += consultFee;
+      existingDaily.totalAmount += apt.consultFee || 0;
     }
-    dailySummaryMap.set(dateStr, existingDaily);
+    dailySummaryMap.set(dailyKey, existingDaily);
   }
 
-  const clinicBreakdown = Array.from(clinicSummaryMap.values());
-  const dailyBreakdown = Array.from(dailySummaryMap.values()).sort((a, b) =>
+  const clinicBreakdown = Array.from(clinicSummaryMap.values()).map(item => ({ ...item, totalAmount: Number(item.totalAmount.toFixed(2)) }));
+  const dailyBreakdown = Array.from(dailySummaryMap.values()).map(item => ({ ...item, totalAmount: Number(item.totalAmount.toFixed(2)) })).sort((a, b) =>
     b.date.localeCompare(a.date)
   );
+
+  const groups = reconciliationGroups(allMatching);
+  const byCountry = groups.byCountry.map(group => ({
+    country: group.country,
+    currency: group.currency,
+    totalEarnedAmount: group.totalConsultFees,
+    totalPotentialAmount: Number(allMatching
+      .filter(row => (row.feeCountry || 'HISTORICAL_UNSPECIFIED') === group.country &&
+        ['COMPLETE', 'CONFIRMED', 'ARRIVED', 'INPROGRESS'].includes(row.status))
+      .reduce((sum, row) => sum + (row.consultFee || 0), 0).toFixed(2)),
+  }));
+  const singleCountry = byCountry.length === 1 ? byCountry[0] : null;
 
   return {
     summary: {
@@ -1037,8 +1066,11 @@ const getReconciliationReports = async (
       noShowAppointments: totalNoShow,
       pendingAppointments: totalPending,
       consultFeePerSession: consultFee,
-      totalEarnedAmount: totalCompleted * consultFee,
-      totalPotentialAmount: (totalCompleted + totalConfirmed) * consultFee,
+      consultFeeCurrency: bookingCurrencyCode(doctor.user.country) || "Unspecified",
+      currency: singleCountry?.currency || null,
+      byCountry,
+      totalEarnedAmount: singleCountry?.totalEarnedAmount ?? (allMatching.length ? null : 0),
+      totalPotentialAmount: singleCountry?.totalPotentialAmount ?? (allMatching.length ? null : 0),
     },
     availableClinics,
     clinicBreakdown,
@@ -1056,7 +1088,9 @@ const getReconciliationReports = async (
       startTime: apt.startTime,
       endTime: apt.endTime,
       status: apt.status,
-      consultFee: consultFee,
+      consultFee: apt.consultFee || 0,
+      feeCountry: apt.feeCountry,
+      displayStatus: bookingDisplayStatus(apt),
       clinic: {
         id: apt.clinic.id,
         clinicName: apt.clinic.clinicName,
