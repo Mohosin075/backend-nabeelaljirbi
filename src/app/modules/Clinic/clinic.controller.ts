@@ -576,6 +576,7 @@ const getClinicReconciliationReports = catchAsync(
       "startDate",
       "endDate",
       "status",
+      "statusView",
       "searchTerm",
     ]);
     const options = pick(req.query, paginationFields);

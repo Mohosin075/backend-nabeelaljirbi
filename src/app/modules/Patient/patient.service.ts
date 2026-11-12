@@ -1220,6 +1220,7 @@ const getDoctor = async (doctorId: string, requestedClinicId?: string) => {
       contactPhone: dc.clinic.contactPhone,
       galleries: dc.clinic.galleries,
       country: dc.clinic.user.country,
+      city: dc.clinic.user.city,
       schedule: scheduleForClinic(dc.clinicId),
     })),
 

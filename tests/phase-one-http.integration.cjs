@@ -132,3 +132,38 @@ test('finance account lookup searches phone numbers and rejects clinic and staff
   assert.equal((await request('/finance-accounts?search=123', 'phase1-clinic-user')).status, 403);
   assert.equal((await request('/finance-accounts?search=1', 'phase1-admin')).status, 400);
 });
+
+
+test('reconciliation metadata matches visible rows and simplified status filters include legacy records', async () => {
+  const data = ['COMPLETE', 'INPROGRESS', 'CANCELLED'].map((status, index) => ({
+    patientId: 'phase1-patient', doctorId: 'phase1-doctor', clinicId: 'phase1-clinic',
+    consultDate: new Date('2033-04-05'), serialNumber: 9100 + index, status,
+    ...(status === 'CANCELLED' ? { absenceType: 'DOCTOR_ABSENT' } : {}),
+  }));
+  await db.bookingAppointment.createMany({ data });
+  const url = base.replace('/phase-one', '/clinic/reconciliation-reports') + '?startDate=2033-04-05&endDate=2033-04-05';
+  const load = async suffix => {
+    const response = await fetch(url + suffix, { headers: { Authorization: 'Bearer phase1-clinic-user' } });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const all = await load('');
+  assert.equal(all.meta.total, 3);
+  assert.equal(all.data.data.length, 3);
+  assert.equal(all.data.summary.totalBookings, 3);
+  const arrived = await load('&statusView=simple&status=ARRIVED');
+  assert.equal(arrived.meta.total, 1);
+  assert.equal(arrived.data.data[0].status, 'INPROGRESS');
+  const absent = await load('&statusView=simple&status=DOCTOR_ABSENT');
+  assert.equal(absent.meta.total, 1);
+  assert.equal(absent.data.data[0].absenceType, 'DOCTOR_ABSENT');
+});
+
+test('clinic lifetime completed count agrees with its country breakdown', async () => {
+  const response = await fetch(base.replace('/phase-one', '/clinic/financial-summary'), {
+    headers: { Authorization: 'Bearer phase1-clinic-user' },
+  });
+  assert.equal(response.status, 200);
+  const { data } = await response.json();
+  assert.equal(data.totalCompletedCount, data.consultationTotalsByCountry.reduce((sum, country) => sum + country.completedCount, 0));
+});

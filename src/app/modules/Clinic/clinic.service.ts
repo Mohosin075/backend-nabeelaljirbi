@@ -2413,6 +2413,7 @@ const getClinicReconciliationReports = async (
     startDate?: string;
     endDate?: string;
     status?: string;
+    statusView?: string;
     searchTerm?: string;
   },
   options: IPaginationOptions
@@ -2517,11 +2518,11 @@ const getClinicReconciliationReports = async (
     });
   }
 
-  // 5. Status filter
+  // Preserve legacy API filters while grouping statuses for the simplified dashboard.
   if (filters.status && filters.status.toUpperCase() !== "ALL") {
-    andConditions.push({
-      status: filters.status.toUpperCase() as BookingStatus,
-    });
+    andConditions.push(filters.statusView === "simple"
+      ? bookingFilters({ status: filters.status.toUpperCase(), statusView: "simple" })
+      : { status: filters.status.toUpperCase() as BookingStatus });
   }
 
   // 6. Search term (patient name / phone)
