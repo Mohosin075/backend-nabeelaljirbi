@@ -809,6 +809,14 @@ test("reconciliation separates saved countries, unknown history and doctor/clini
   assert.equal(result.summary.currency,null);
   assert.deepEqual(result.summary.byCountry.map(g=>[g.country,g.currency,g.totalConsultFees]).sort(),[["EGYPT","EGP",100],["HISTORICAL_UNSPECIFIED","Unspecified",300],["TUNISIA","TND",200]].sort());
   assert.equal(result.doctorBreakdown.length,3); assert.equal(result.clinicBreakdown.length,3);
+  const doctorReport = await DoctorService.getReconciliationReports('phase1-doctor-user', {clinicId:f.clinic.id}, {limit:100});
+  assert.equal(doctorReport.summary.totalEarnedAmount, null);
+  assert.deepEqual(doctorReport.summary.byCountry.map(g => [g.country, g.currency, g.totalEarnedAmount]).sort(), [["EGYPT","EGP",100],["HISTORICAL_UNSPECIFIED","Unspecified",300],["TUNISIA","TND",200]].sort());
+  assert.deepEqual(doctorReport.data.map(row => row.consultFee).sort((a,b)=>a-b), [100,200,300]);
+  assert.equal(doctorReport.clinicBreakdown.length, 3);
+  const single = await DoctorService.getReconciliationReports('phase1-doctor-user', {clinicId:f.clinic.id, searchTerm:f.patient.phoneNumber}, {limit:1});
+  assert.equal(single.meta.total, 3);
+
   const financial = await ClinicService.getClinicFinancialSummary(f.owner.id);
   assert.equal(financial.walletCurrency,"EGP"); assert.equal(financial.totalEarnings,100);
   assert.equal(financial.consultationTotalsByCountry.length,3);
@@ -845,16 +853,66 @@ test("overview uses each clinic calendar across midnight, including doctor worki
   const east=await fixture(),west=await fixture();
   await db.clinic.update({where:{id:west.clinic.id},data:{timezone:"America/New_York"}});
   const a=await BookingService.createBooking(east.patient.id,east.payload),b=await BookingService.createBooking(west.patient.id,west.payload);
-  await db.bookingAppointment.update({where:{id:a.id},data:{consultDate:new Date("2030-01-02T00:00:00Z")}});
-  await db.bookingAppointment.update({where:{id:b.id},data:{consultDate:new Date("2030-01-01T00:00:00Z")}});
+  await db.bookingAppointment.update({where:{id:a.id},data:{consultDate:new Date("2030-01-02T00:00:00Z"),status:"CONFIRMED"}});
+  await db.bookingAppointment.update({where:{id:b.id},data:{consultDate:new Date("2030-01-01T00:00:00Z"),status:"CONFIRMED"}});
   await withClock(Date.parse("2030-01-01T23:30:00Z"),async()=>{
     const view=await history.overview({id:"phase1-doctor-user",role:"DOCTOR"});
     assert.equal(view.todayCount,2);
     const appointments = await DoctorService.getAppointments('phase1-doctor-user', { today: 'true' }, { limit: 25 });
     assert.equal(appointments.statistics.todayCount, 2);
     assert.equal(appointments.meta.total, 2);
+    assert.equal((await ClinicService.getClinicStats(east.owner.id)).todayAppointment, 1);
+    assert.equal((await ClinicService.getClinicManagerStats(west.staff.id)).todayAppointment, 1);
+    for (const read of [ClinicService.getClinicDoctor, ClinicService.getClinicManagerDoctor]) {
+      const roster = await read(east.owner.id, {}, {limit:25});
+      const doctor = roster.data.find(row => row.doctorId === 'phase1-doctor');
+      assert.equal(doctor.totalConsult, 1);
+      assert.equal(doctor.upcomingConsult, 1);
+    }
+    const detail = await ClinicService.getDoctorAppointments('phase1-doctor', east.owner.id, {}, {limit:25});
+    assert.equal(detail.doctor.totalConsult, 1);
+    assert.equal(detail.doctor.upcomingConsult, 1);
+    assert.equal(detail.doctor.schedule.length, 1);
+    assert.equal(detail.doctor.schedule[0].slots[0].startTime, "12:00");
+    const search = await ClinicService.getManagerBookingHistory(east.owner.id, {searchTerm:'#'+a.serialNumber,consultDate:'2030-01-02'}, {limit:1});
+    assert.equal(search.meta.total, 1);
+    assert.equal(search.data[0].id, a.id);
+
     assert.equal(view.clinicLocalDates.find(c=>c.clinicId===east.clinic.id).date,"2030-01-02");
     assert.equal(view.clinicLocalDates.find(c=>c.clinicId===west.clinic.id).date,"2030-01-01");
     assert.ok(view.upcoming.some(row=>row.id===a.id)); assert.ok(view.upcoming.some(row=>row.id===b.id));
   });
+});
+
+
+test('doctor report uses saved fees after current pricing changes', async () => {
+  const f = await fixture();
+  const b = await BookingService.createBooking(f.patient.id, f.payload);
+  await db.bookingAppointment.update({where:{id:b.id},data:{status:'COMPLETE',consultFee:13.25,feeCountry:'LIBYA'}});
+  const result = await DoctorService.getReconciliationReports('phase1-doctor-user', {clinicId:f.clinic.id}, {limit:1});
+  assert.equal(result.summary.totalEarnedAmount,13.25);
+  assert.equal(result.summary.currency,'LYD');
+  assert.equal(result.data[0].consultFee,13.25);
+  assert.equal(result.clinicBreakdown[0].totalAmount,13.25);
+});
+
+
+test('report filters search clinic city, address, doctor, clinic name and booking serial', async () => {
+  const f = await fixture();
+  const booking = await BookingService.createBooking(f.patient.id, f.payload);
+  await db.user.update({where:{id:f.owner.id},data:{city:'Audit Filter City',address:'Audit Filter Street'}});
+  await db.clinic.update({where:{id:f.clinic.id},data:{location:'32.123,13.456'}});
+  const doctor = await db.user.findUnique({where:{id:'phase1-doctor-user'}});
+  for (const location of ['Audit Filter City','Audit Filter Street','32.123,13.456']) {
+    const report = await ClinicService.getClinicReconciliationReports(f.owner.id,{location},{limit:1});
+    assert.equal(report.meta.total,1,location);
+    assert.equal(report.data[0].id,booking.id);
+  }
+  for (const searchTerm of [doctor.fullName,f.clinic.clinicName,'#'+booking.serialNumber]) {
+    const report = await ClinicService.getClinicReconciliationReports(f.owner.id,{searchTerm},{limit:1});
+    assert.equal(report.meta.total,1,searchTerm);
+    assert.equal(report.data[0].id,booking.id);
+  }
+  const empty = await ClinicService.getClinicReconciliationReports(f.owner.id,{location:'Missing audit city'},{limit:1});
+  assert.equal(empty.meta.total,0);
 });

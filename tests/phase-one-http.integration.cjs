@@ -167,3 +167,16 @@ test('clinic lifetime completed count agrees with its country breakdown', async 
   const { data } = await response.json();
   assert.equal(data.totalCompletedCount, data.consultationTotalsByCountry.reduce((sum, country) => sum + country.completedCount, 0));
 });
+
+
+test('receptionist booking exports work within the assigned clinic and money exports remain restricted', async () => {
+  const staff = await db.user.create({ data: { role: 'MANAGER', phoneNumber: 'export-staff-' + require('node:crypto').randomUUID(), manager: {create:{clinicId:'phase1-clinic'}} } });
+  assert.ok(staff);
+  const response = await request('/reports/bookings/xlsx', staff.id);
+  assert.equal(response.status, 200);
+  const book = new ExcelJS.Workbook();
+  await book.xlsx.load(Buffer.from(await response.arrayBuffer()));
+  assert.ok(book.worksheets[0].rowCount >= 4);
+  assert.equal((await request('/reports/wallet/xlsx', staff.id)).status, 403);
+  assert.equal((await request('/reports/payouts/pdf', staff.id)).status, 403);
+});

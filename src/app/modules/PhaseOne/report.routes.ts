@@ -12,9 +12,10 @@ router.use(auth());
 router.get(
   "/reports/:kind/:format",
   catchAsync(async (req: any, res) => {
-    if (!["ADMIN", "DOCTOR", "CLINIC"].includes(req.user.role))
-      throw new ApiError(403, "Report access denied");
     const { kind, format } = req.params;
+    const canExportBookings = req.user.role === "MANAGER" && kind === "bookings";
+    if (!["ADMIN", "DOCTOR", "CLINIC"].includes(req.user.role) && !canExportBookings)
+      throw new ApiError(403, "Report access denied");
     if (
       !["pdf", "xlsx"].includes(format) ||
       !["bookings", "wallet", "payouts"].includes(kind)

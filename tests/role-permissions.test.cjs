@@ -22,7 +22,7 @@ Module._load=function(request,parent,main){
   return original.call(this,request,parent,main);
 };
 const auth=require('../src/app/middlewares/auth').default;
-const routes=[['admin','Admin/admin.routes','AdminRoutes'],['clinic','Clinic/clinic.routes','ClinicRoutes'],['payment','Payment/payment.routes','PaymentRoutes'],['prepaid','PrepaidCard/prepaidCard.routes','PrepaidCardRoutes'],['referral','Referral/referral.routes','ReferralRoutes'],['user','User/user.routes','UserRoutes'],['notification','AllowNotification/allowNotification.routes','AllowNotificationRoutes'],['patient-plan','PatientPlatformSubscription/patientPlatformSubscription.routes','PatientPlatformSubscriptionRoutes'],['clinic-plan','ClinicPlatformSubscription/clinicPlatformSubscription.routes','ClinicPlatformSubscriptionRoutes'],['upload','uploadFile/upload.routes','UploadVideo']].map(([prefix,file,name])=>[prefix,require('../src/app/modules/'+file)[name]]);
+const routes=[['admin','Admin/admin.routes','AdminRoutes'],['clinic','Clinic/clinic.routes','ClinicRoutes'],['payment','Payment/payment.routes','PaymentRoutes'],['prepaid','PrepaidCard/prepaidCard.routes','PrepaidCardRoutes'],['referral','Referral/referral.routes','ReferralRoutes'],['user','User/user.routes','UserRoutes'],['notification','AllowNotification/allowNotification.routes','AllowNotificationRoutes'],['patient-plan','PatientPlatformSubscription/patientPlatformSubscription.routes','PatientPlatformSubscriptionRoutes'],['clinic-plan','ClinicPlatformSubscription/clinicPlatformSubscription.routes','ClinicPlatformSubscriptionRoutes'],['upload','uploadFile/upload.routes','UploadVideo'],['insurance','Insurance/insurance.routes','InsuranceRoutes']].map(([prefix,file,name])=>[prefix,require('../src/app/modules/'+file)[name]]);
 Module._load=original;
 let server,base;
 before(async()=>{
@@ -132,4 +132,13 @@ test('legacy user status and social service cannot bypass admin-account or ident
   await assert.rejects(service.updateStatus('super','SUSPENDED'),/Super Admin staff controls/);
   await assert.rejects(service.createSocialUser({phoneNumber:accounts.get('super').phoneNumber}),/identity token/);
   assert.equal(writes,0);
+});
+
+
+test('insurance configuration writes require operations permission across every role', async () => {
+  for (const [method, path] of [['POST', '/insurance/'], ['PATCH', '/insurance/example'], ['DELETE', '/insurance/example']]) {
+    for (const id of [null, ...accounts.keys()]) {
+      assert.equal((await request(path, id, method)).status, id === null ? 401 : ['super', 'ops'].includes(id) ? 200 : 403, method + ' ' + id);
+    }
+  }
 });

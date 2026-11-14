@@ -671,32 +671,7 @@ const getManagerBookingHistory = async (
     andConditions.push({ clinicId });
   }
 
-  if (searchTerm) {
-    andConditions.push({
-      OR: [
-        {
-          patient: {
-            user: {
-              fullName: {
-                contains: searchTerm,
-                mode: "insensitive",
-              },
-            },
-          },
-        },
-        {
-          patient: {
-            user: {
-              phoneNumber: {
-                contains: searchTerm,
-                mode: "insensitive",
-              },
-            },
-          },
-        },
-      ],
-    });
-  }
+  if (searchTerm) andConditions.push(bookingFilters({ searchTerm }));
 
   if (filterData.status) {
     andConditions.push(bookingFilters({ status: filterData.status, statusView: filterData.statusView }));
@@ -708,22 +683,7 @@ const getManagerBookingHistory = async (
     });
   }
 
-  if (filterData.consultDate) {
-    const searchDate = new Date(filterData.consultDate);
-    // 🌍 UTC HANDLING: Set date boundaries using UTC to ensure consistent date filtering
-    // regardless of server timezone
-    const startOfDay = new Date(searchDate);
-    startOfDay.setUTCHours(0, 0, 0, 0);
-    const endOfDay = new Date(searchDate);
-    endOfDay.setUTCHours(23, 59, 59, 999);
-
-    andConditions.push({
-      consultDate: {
-        gte: startOfDay,
-        lte: endOfDay,
-      },
-    });
-  }
+  if (filterData.consultDate) andConditions.push(bookingFilters({ date: filterData.consultDate }));
 
   const whereConditions: Prisma.BookingAppointmentWhereInput =
     andConditions.length > 0 ? { AND: andConditions } : {};
@@ -1715,43 +1675,41 @@ const getDoctorAppointments = async (
 
   const { searchTerm, status } = filters;
 
-  // 1️⃣ Fetch Clinic and Doctor (with full info and ratings) in parallel
-  const [clinicRecord, doctorData] = await Promise.all([
-    getClinicByUserId(clinicId),
-    prisma.doctor.findUnique({
-      where: { id: doctorId },
-      include: {
-        clinic: true,
-        user: {
-          select: {
-            fullName: true,
-            country: true,
-            city: true,
-            profileImage: true,
-            ratingsReceived: {
-              select: { rating: true },
-            },
+  const clinicRecord = await getClinicByUserId(clinicId);
+  if (!clinicRecord) throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
+
+  const doctorData = await prisma.doctor.findUnique({
+    where: { id: doctorId },
+    include: {
+      clinic: true,
+      user: {
+        select: {
+          fullName: true,
+          country: true,
+          city: true,
+          profileImage: true,
+          ratingsReceived: {
+            select: { rating: true },
           },
         },
-        workingDays: {
-          select: {
-            day: true,
-            slots: {
-              select: {
-                startTime: true,
-                endTime: true,
-                capacity: true,
-                isActive: true,
-              },
+      },
+      workingDays: {
+        where: { clinicId: clinicRecord.id },
+        select: {
+          day: true,
+          slots: {
+            select: {
+              startTime: true,
+              endTime: true,
+              capacity: true,
+              isActive: true,
             },
           },
         },
       },
-    }),
-  ]);
+    },
+  });
 
-  if (!clinicRecord)
-    throw new ApiError(httpStatus.NOT_FOUND, "Clinic not found");
   if (!doctorData) throw new ApiError(httpStatus.NOT_FOUND, "Doctor not found");
 
   const clinic = { clinic: clinicRecord };
@@ -1881,7 +1839,7 @@ const getDoctorAppointments = async (
       experience: doctorData.experience,
       fee: doctorData.consultFee,
       profileImage: doctorData.user.profileImage,
-      clinic: doctorData.clinic?.clinicName,
+      clinic: clinicRecord.clinicName,
       reviewCount,
       weightedRating: Number(weightedRating.toFixed(1)),
       totalConsult,
@@ -2451,10 +2409,11 @@ const getClinicReconciliationReports = async (
   if (filters.location && filters.location.toLowerCase() !== "all") {
     andConditions.push({
       clinic: {
-        location: {
-          contains: filters.location,
-          mode: "insensitive",
-        },
+        OR: [
+          { location: { contains: filters.location, mode: 'insensitive' } },
+          { user: { city: { contains: filters.location, mode: 'insensitive' } } },
+          { user: { address: { contains: filters.location, mode: 'insensitive' } } },
+        ],
       },
     });
   }
@@ -2510,17 +2469,11 @@ const getClinicReconciliationReports = async (
 
   // 6. Search term (patient name / phone)
   if (filters.searchTerm && filters.searchTerm.trim()) {
-    const term = filters.searchTerm.trim();
-    andConditions.push({
-      patient: {
-        user: {
-          OR: [
-            { fullName: { contains: term, mode: "insensitive" } },
-            { phoneNumber: { contains: term, mode: "insensitive" } },
-          ],
-        },
-      },
-    });
+    const search = bookingFilters({ searchTerm: filters.searchTerm.trim() });
+    andConditions.push({ OR: [
+      ...search.OR,
+      { clinic: { clinicName: { contains: filters.searchTerm.trim(), mode: 'insensitive' } } },
+    ] });
   }
 
   const whereConditions: Prisma.BookingAppointmentWhereInput = {

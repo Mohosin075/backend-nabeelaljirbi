@@ -319,5 +319,9 @@ export function bookingFilters(input: any, now = new Date()): any {
         },
       },
     ];
+  const serial = String(query.searchTerm || '').trim().replace(/^#/, '');
+  if (/^\d+$/.test(serial) && Number(serial) <= 2147483647) {
+    where.OR!.push({ serialNumber: Number(serial) });
+  }
   return where;
 }
