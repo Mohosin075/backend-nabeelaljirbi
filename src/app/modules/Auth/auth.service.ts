@@ -1,3 +1,4 @@
+import { randomInt, randomUUID } from "node:crypto";
 import { User } from "@prisma/client";
 import httpStatus from "http-status";
 import bcrypt from "bcrypt";
@@ -49,6 +50,9 @@ const resolvePrimaryOTPChannel = async (
   const otpSettings = await prisma.oTPSystem.findFirst();
   const isWhatsappEnabled = otpSettings ? otpSettings.WhatsApp : true;
   const isSmsEnabled = otpSettings ? otpSettings.SMS : false; // Off by default
+  if (!isWhatsappEnabled && !isSmsEnabled) {
+    throw new ApiError(httpStatus.SERVICE_UNAVAILABLE, "OTP delivery is currently disabled");
+  }
 
   const normalized = requestedSender?.toLowerCase().replace(/[\s_-]/g, "");
 
@@ -73,23 +77,18 @@ const resolvePrimaryOTPChannel = async (
     return { primary: "sms" };
   }
 
-  // Default fallback if both flags are somehow false
-  return { primary: "whatsapp", fallback: "sms" };
+  throw new ApiError(httpStatus.SERVICE_UNAVAILABLE, "OTP delivery is currently disabled");
 };
 
 // Send OTP to phone number prioritizing WhatsApp with fallback
 const sendOTP = async (phoneNumber: string, OTPSender?: string) => {
+  if (typeof phoneNumber !== "string" || !/^\+[1-9]\d{6,14}$/.test(phoneNumber)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, "Phone number must start with + and country code");
+  }
   const user = await prisma.user.findUnique({ where: { phoneNumber } });
 
-  if (user?.banned) {
+  if (user && (user.banned || user.status !== "ACTIVE")) {
     throw new ApiError(httpStatus.BAD_REQUEST, "User is banned");
-  }
-
-  if (!phoneNumber.startsWith("+")) {
-    throw new ApiError(
-      httpStatus.BAD_REQUEST,
-      "Phone number must start with + and country code",
-    );
   }
 
   const { primary, fallback } = await resolvePrimaryOTPChannel(OTPSender);
@@ -130,30 +129,16 @@ const sendOTP = async (phoneNumber: string, OTPSender?: string) => {
     }
   }
 
-  // Generate 6-digit OTP code for local logging and backup verification
-  const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
-  const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
-
-  console.log(`\n========================================`);
-  console.log(`📱 [LOGIN / REGISTER OTP GENERATED]`);
-  console.log(`👤 Phone Number : ${phoneNumber}`);
-  console.log(`🔑 OTP CODE     : ${generatedOtp}`);
-  console.log(`📡 Twilio Status: ${sendSuccess ? 'Delivered via ' + channelUsed : 'Twilio Delivery Failed (Use Console OTP)'}`);
-  console.log(`========================================\n`);
-
   if (!sendSuccess) {
-    channelUsed = primary;
-    verificationStatus = "pending";
+    throw new ApiError(httpStatus.SERVICE_UNAVAILABLE, "Unable to send OTP. Please try again later.");
   }
 
-  // Create or update account with generated OTP
+  // Twilio owns the challenge. Never create a second, undelivered login code.
   await prisma.user.upsert({
     where: { phoneNumber },
-    update: { otp: generatedOtp, otpExpiresAt },
+    update: { otp: null, otpExpiresAt: null },
     create: {
       phoneNumber,
-      otp: generatedOtp,
-      otpExpiresAt,
       referralCode: generateReferralCode(),
     },
   });
@@ -178,13 +163,7 @@ const verifyUserByOTP = async (
 
   let isVerified = false;
 
-  // 1. Check generated local OTP
-  if (!isVerified && user.otp && user.otp === otp && user.otpExpiresAt && user.otpExpiresAt > new Date()) {
-    isVerified = true;
-    console.log(`✅ [OTP VERIFIED VIA CONSOLE CODE]: ${phoneNumber}`);
-  }
-
-  // 2. If not matched with local OTP, try Twilio Verify check
+  // Only a code verified by the delivery provider can establish phone ownership.
   if (!isVerified) {
     try {
       const verificationCheck = await client.verify.v2
@@ -327,101 +306,69 @@ const adminLogin = async (payload: { email: string; password: string }) => {
   };
 };
 
+const dashboardRoles: NonNullable<User["role"]>[] = ['ADMIN', 'CLINIC', 'MANAGER', 'DOCTOR'];
+const recoveryAccount = (emailOrPhone: string) => prisma.user.findFirst({
+  where: {
+    role: { in: dashboardRoles },
+    OR: [{ email: { equals: emailOrPhone.trim(), mode: 'insensitive' } }, { phoneNumber: emailOrPhone.trim() }],
+  },
+});
+
 const forgotPassword = async (payload: { emailOrPhone: string }) => {
-  const { emailOrPhone } = payload;
-  const cleanInput = emailOrPhone.trim();
-
-  const user = await prisma.user.findFirst({
-    where: {
-      role: { in: ['ADMIN', 'CLINIC', 'MANAGER', 'DOCTOR'] },
-      OR: [
-        { email: { equals: cleanInput, mode: 'insensitive' } },
-        { phoneNumber: cleanInput },
-      ],
-    },
-  });
-
-  if (!user) {
-    throw new ApiError(httpStatus.NOT_FOUND, "No dashboard account found with provided email or phone");
-  }
-
-  const resetToken = Math.floor(100000 + Math.random() * 900000).toString();
-  const resetExpires = new Date(Date.now() + 15 * 60 * 1000);
-
-  await prisma.user.update({
-    where: { id: user.id },
-    data: {
-      passwordResetToken: resetToken,
-      passwordResetExpires: resetExpires,
-    },
-  });
-
-  console.log(`========================================`);
-  console.log(`[ADMIN FORGOT PASSWORD OTP GENERATED]`);
-  console.log(`👤 Admin Account : ${user.email || user.phoneNumber}`);
-  console.log(`🔑 RESET CODE     : ${resetToken}`);
-  console.log(`========================================`);
-
-  if (user.email) {
+  const user = await recoveryAccount(payload.emailOrPhone);
+  if (!user) throw new ApiError(404, 'No dashboard account found with provided email or phone');
+  if (user.banned || user.status !== 'ACTIVE') throw new ApiError(403, 'Account is inactive or banned');
+  const emailRequested = payload.emailOrPhone.includes('@');
+  let resetToken: string;
+  if (emailRequested) {
+    resetToken = randomInt(100000, 1000000).toString();
     try {
-      await emailSender(
-        "Admin Password Reset Code",
-        user.email,
-        otpEmail(resetToken)
-      );
-      console.log(`[Email Reset OTP Sent] -> ${user.email}`);
-    } catch (e) {
-      console.error("Failed to send reset email via Nodemailer:", e);
+      await emailSender('Password Reset Code', user.email!, otpEmail(resetToken));
+    } catch {
+      throw new ApiError(503, 'Unable to send password reset email. Please try again later.');
     }
-  }
-
-  if (user.phoneNumber && user.phoneNumber.startsWith("+")) {
-    try {
-      await client.verify.v2
-        .services(`${config.twilio.serviceSid}`)
-        .verifications.create({ to: user.phoneNumber, channel: 'sms' });
-      console.log(`[SMS Reset OTP Sent via Twilio] -> ${user.phoneNumber}`);
-    } catch (e) {
-      console.error("Twilio SMS send error (skipped):", e);
+  } else {
+    const { primary, fallback } = await resolvePrimaryOTPChannel();
+    const deliver = (channel: OTPChannel) => client.verify.v2.services(String(config.twilio.serviceSid))
+      .verifications.create({ to: user.phoneNumber, channel });
+    try { await deliver(primary); }
+    catch {
+      if (!fallback) throw new ApiError(503, 'Unable to send password reset code. Please try again later.');
+      try { await deliver(fallback); }
+      catch { throw new ApiError(503, 'Unable to send password reset code. Please try again later.'); }
     }
+    resetToken = 'phone:' + randomUUID();
   }
-
-  return {
-    message: "Password reset token sent successfully. Please check your email or phone.",
-  };
+  await prisma.user.update({ where: { id: user.id }, data: {
+    passwordResetToken: resetToken,
+    passwordResetExpires: new Date(Date.now() + 15 * 60 * 1000),
+  } });
+  return { message: emailRequested ? 'Password reset code sent to your email.' : 'Password reset code sent to your phone.' };
 };
 
-const resetPassword = async (payload: { token: string; newPassword: string }) => {
-  const { token, newPassword } = payload;
-
-  const user = await prisma.user.findFirst({
-    where: {
-      role: 'ADMIN',
-      passwordResetToken: token,
-      passwordResetExpires: {
-        gt: new Date(),
-      },
-    },
-  });
-
-  if (!user) {
-    throw new ApiError(httpStatus.BAD_REQUEST, "Invalid or expired password reset token");
+const resetPassword = async (payload: { emailOrPhone: string; token: string; newPassword: string }) => {
+  const user = await recoveryAccount(payload.emailOrPhone);
+  if (!user || user.banned || user.status !== 'ACTIVE' || !user.passwordResetToken ||
+      !user.passwordResetExpires || user.passwordResetExpires <= new Date()) {
+    throw new ApiError(400, 'Invalid or expired password reset token');
   }
-
-  const hashedPassword = await bcrypt.hash(newPassword, 12);
-
-  await prisma.user.update({
-    where: { id: user.id },
-    data: {
-      password: hashedPassword,
-      passwordResetToken: null,
-      passwordResetExpires: null,
-    },
-  });
-
-  return {
-    message: "Password reset successfully. You can now login with your new password.",
-  };
+  let verified = false;
+  if (user.passwordResetToken.startsWith('phone:')) {
+    try {
+      const check = await client.verify.v2.services(String(config.twilio.serviceSid))
+        .verificationChecks.create({ to: user.phoneNumber, code: payload.token });
+      verified = check.status === 'approved';
+    } catch { /* Invalid or expired provider challenge. */ }
+  } else {
+    verified = user.passwordResetToken === payload.token;
+  }
+  if (!verified) throw new ApiError(400, 'Invalid or expired password reset token');
+  const password = await bcrypt.hash(payload.newPassword, 12);
+  await prisma.user.update({ where: { id: user.id }, data: {
+    password, passwordResetToken: null, passwordResetExpires: null,
+    accessToken: null, refreshToken: null,
+  } });
+  return { message: 'Password reset successfully. You can now login with your new password.' };
 };
 
 // update code

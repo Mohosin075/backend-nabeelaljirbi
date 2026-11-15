@@ -3,7 +3,7 @@ import { getClinicCalendarDate } from "../../../utils/timezoneHelper";
 import { reconciliationGroups } from "../../../utils/reconciliation";
 import { bookingCurrencyCode } from "../../../utils/money";
 import { bookingDisplayStatus } from "../../../utils/bookingDisplay";
-import { assertProfileEditable } from "../PhaseOne/phaseOne.policy";
+import { assertProfileEditable, claimProfileRole } from "../PhaseOne/phaseOne.policy";
 import { bookingFilters, assertArrivalWindow } from "../PhaseOne/phaseOne.policy";
 import { Prisma, UserRole, BookingStatus, TopUpType, UserStatus } from "@prisma/client";
 import httpStatus from "http-status";
@@ -125,7 +125,7 @@ const updateClinicProfile = async (userId: string, payload: any) => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new ApiError(httpStatus.NOT_FOUND, "User not found");
   if (user.role === UserRole.MANAGER) throw new ApiError(403, "Clinic staff cannot change the clinic owner's profile or role");
-  if (user.profileCompleted && user.role && user.role !== UserRole.CLINIC) {
+  if (user.role && user.role !== UserRole.CLINIC) {
     throw new ApiError(httpStatus.FORBIDDEN, "Only the clinic administrator can update clinic settings");
   }
 
@@ -133,6 +133,7 @@ const updateClinicProfile = async (userId: string, payload: any) => {
 
   // 2️⃣ Update user & upsert clinic
   const updatedUser = await prisma.$transaction(async tx => {
+    await claimProfileRole(tx, userId, 'CLINIC');
     await assertProfileEditable(tx, userId, payload);
     return await tx.user.update({
     where: { id: userId },
@@ -2356,6 +2357,7 @@ const getClinicReconciliationReports = async (
     status?: string;
     statusView?: string;
     searchTerm?: string;
+    currency?: string;
   },
   options: IPaginationOptions
 ) => {
@@ -2383,6 +2385,13 @@ const getClinicReconciliationReports = async (
   }
 
   const andConditions: Prisma.BookingAppointmentWhereInput[] = [];
+
+  if (filters.currency && filters.currency !== 'ALL') {
+    const countries = { LYD: 'LIBYA', EGP: 'EGYPT', TND: 'TUNISIA', DZD: 'ALGERIA' } as const;
+    const country = countries[filters.currency as keyof typeof countries];
+    if (!country) throw new ApiError(400, 'Unsupported currency filter');
+    andConditions.push({ feeCountry: country });
+  }
 
   if (clinicId) {
     andConditions.push({ clinicId });

@@ -14,7 +14,7 @@ const insuranceFileUpload = s3Uploader.single("image");
 
 router.patch(
   "/profile-update",
-  auth(UserRole.DOCTOR),
+  auth(),
   fileUpload,
   // validateRequest(doctorValidation.updateDoctorProfileValidationSchema),
   DoctorController.updateDoctorProfile

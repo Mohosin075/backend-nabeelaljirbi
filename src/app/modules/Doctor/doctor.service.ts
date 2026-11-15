@@ -2,7 +2,7 @@ import { bookingDisplayStatus } from "../../../utils/bookingDisplay";
 import { reconciliationGroups } from "../../../utils/reconciliation";
 import { bookingCurrencyCode } from "../../../utils/money";
 import { bookingCalendar } from "../../../utils/bookingCalendar";
-import { assertProfileEditable, bookingFilters } from "../PhaseOne/phaseOne.policy";
+import { assertProfileEditable, claimProfileRole, bookingFilters } from "../PhaseOne/phaseOne.policy";
 import { BookingStatus, Prisma, UserRole, WeekDay } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
@@ -131,7 +131,7 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
     include: { doctor: true },
   });
   if (!user) throw new ApiError(httpStatus.NOT_FOUND, "User not found");
-  if (user.role !== UserRole.DOCTOR || !user.doctor) {
+  if (user.role && user.role !== UserRole.DOCTOR) {
     throw new ApiError(httpStatus.FORBIDDEN, "Only doctor accounts can update doctor profiles");
   }
 
@@ -166,6 +166,7 @@ const updateDoctorProfile = async (userId: string, payload: any) => {
         ? payload.biography
         : undefined;
   const updatedUser = await prisma.$transaction(async tx => {
+    await claimProfileRole(tx, userId, 'DOCTOR');
     await assertProfileEditable(tx, userId, { ...payload, ...(qualificationsVal !== undefined ? { qualifications: qualificationsVal } : {}) });
     return await tx.user.update({
     where: { id: userId },

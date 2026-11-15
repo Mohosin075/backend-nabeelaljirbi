@@ -112,7 +112,9 @@ test('real OTP login rejects universal codes and inactive accounts, but preserve
     await assert.rejects(service.verifyUserByOTP(current.phoneNumber,'123456'),/Invalid or expired/);assert.equal(writes,0);
     config.env='development';process.env.NODE_ENV='development';
     await assert.rejects(service.verifyUserByOTP(current.phoneNumber,'123456'),/Invalid or expired/);assert.equal(writes,0);
-    const valid=await service.verifyUserByOTP(current.phoneNumber,'987654');assert.equal(jwt.verify(valid.accessToken,secret).id,current.id);assert.equal(writes,1);
+    await assert.rejects(service.verifyUserByOTP(current.phoneNumber,'987654'),/Invalid or expired/);assert.equal(writes,0);
+    approved=true;
+    const valid=await service.verifyUserByOTP(current.phoneNumber,'654321');assert.equal(jwt.verify(valid.accessToken,secret).id,current.id);assert.equal(writes,1);
     current={...current,status:'SUSPENDED'};
     await assert.rejects(service.verifyUserByOTP(current.phoneNumber,'987654'),/inactive/);assert.equal(writes,1);
     current={...current,status:'ACTIVE',otp:null};approved=true;

@@ -916,3 +916,23 @@ test('report filters search clinic city, address, doctor, clinic name and bookin
   const empty = await ClinicService.getClinicReconciliationReports(f.owner.id,{location:'Missing audit city'},{limit:1});
   assert.equal(empty.meta.total,0);
 });
+
+test('currency filtering scopes reconciliation rows, pagination and summaries together', async () => {
+  const f = await fixture();
+  const booking = await BookingService.createBooking(f.patient.id, f.payload);
+  await db.bookingAppointment.update({ where: { id: booking.id }, data: { status: 'COMPLETE', feeCountry: 'EGYPT', consultFee: 23.5 } });
+  const other = await db.bookingAppointment.findUnique({ where: { id: booking.id } });
+  const { id, createdAt, updatedAt, ...data } = other;
+  await db.bookingAppointment.create({ data: { ...data, feeCountry: 'LIBYA', consultFee: 90, serialNumber: 2 } });
+  const filtered = await ClinicService.getClinicReconciliationReports(f.owner.id, { currency: 'EGP' }, { limit: 1 });
+  assert.equal(filtered.meta.total, 1);
+  assert.equal(filtered.data[0].id, booking.id);
+  assert.equal(filtered.summary.currency, 'EGP');
+  assert.equal(filtered.summary.totalConsultFees, 23.5);
+  assert.equal(filtered.clinicBreakdown.length, 1);
+  const mixed = await ClinicService.getClinicReconciliationReports(f.owner.id, {}, { limit: 1 });
+  assert.equal(mixed.meta.total, 2);
+  assert.equal(mixed.summary.totalConsultFees, null);
+  assert.equal(mixed.summary.byCountry.length, 2);
+  await assert.rejects(ClinicService.getClinicReconciliationReports(f.owner.id, { currency: 'USD' }, { limit: 1 }), /Unsupported currency/);
+});
