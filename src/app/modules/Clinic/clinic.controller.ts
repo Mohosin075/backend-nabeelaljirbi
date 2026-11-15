@@ -579,6 +579,7 @@ const getClinicReconciliationReports = catchAsync(
       "status",
       "statusView",
       "searchTerm",
+      "currency",
     ]);
     const options = pick(req.query, paginationFields);
 

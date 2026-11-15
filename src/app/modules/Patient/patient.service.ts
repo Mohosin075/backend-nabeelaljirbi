@@ -1,4 +1,4 @@
-import { assertProfileEditable } from "../PhaseOne/phaseOne.policy";
+import { assertProfileEditable, claimProfileRole } from "../PhaseOne/phaseOne.policy";
 import { Prisma, UserRole, BookingStatus, UserStatus, Country } from "@prisma/client";
 import httpStatus from "http-status";
 import ApiError from "../../../errors/ApiErrors";
@@ -81,13 +81,14 @@ const getPatientProfile = async (userId: string) => {
 const updatePatientProfile = async (userId: string, payload: any) => {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new ApiError(httpStatus.NOT_FOUND, "User not found");
-  if (user.role !== UserRole.PATIENT) {
+  if (user.role && user.role !== UserRole.PATIENT) {
     throw new ApiError(httpStatus.FORBIDDEN, "Only patient accounts can update patient profiles");
   }
 
   const { accessToken } = generateTokens(user, UserRole.PATIENT);
 
   const updatedUser = await prisma.$transaction(async tx => {
+    await claimProfileRole(tx, userId, 'PATIENT');
     await assertProfileEditable(tx, userId, payload);
     return await tx.user.update({
     where: { id: userId },

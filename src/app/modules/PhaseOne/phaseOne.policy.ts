@@ -125,6 +125,18 @@ export async function assertProfileEditable(
       `Approved profile is locked. Submit a profile change request for: ${changed.join(", ")}`,
     );
 }
+
+// A verified fresh account chooses its role once, inside the profile transaction.
+// Recheck here so concurrent role setup cannot create two different profiles.
+export async function claimProfileRole(tx: any, userId: string, role: 'PATIENT' | 'DOCTOR' | 'CLINIC') {
+  const user = await tx.user.findUnique({ where: { id: userId }, include: { patient: true, doctor: true, clinic: true, manager: true } });
+  if (!user) throw new ApiError(404, 'Account not found');
+  if (user.role === role) return;
+  if (user.role || user.profileCompleted || user.patient || user.doctor || user.clinic || user.manager?.length) {
+    throw new ApiError(403, 'An existing account cannot change its registration role');
+  }
+  await tx.user.update({ where: { id: userId }, data: { role } });
+}
 export function bankDetails(value: any) {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new ApiError(400, "Bank details are required");

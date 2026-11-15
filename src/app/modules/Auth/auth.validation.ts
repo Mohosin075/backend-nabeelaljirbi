@@ -30,6 +30,7 @@ const forgotPasswordValidationSchema = z.object({
 
 const resetPasswordValidationSchema = z.object({
   body: z.object({
+    emailOrPhone: z.string().min(3, "Email or Phone is required"),
     token: z.string().min(1, "Token is required"),
     newPassword: z.string().min(6, "Password must be at least 6 characters"),
   }),
