@@ -10329,3 +10329,4 @@
 {"level":"info","message":"Incoming request: GET /api/v1/clinic/financial-summary","service":"default-service-name","timestamp":"2026-11-14 12:46:38"}
 {"level":"info","message":"Incoming request: GET /api/v1/clinic/settlements?limit=50","service":"default-service-name","timestamp":"2026-11-14 12:46:38"}
 {"level":"info","message":"Incoming request: GET /api/v1/clinic/financial-summary","service":"default-service-name","timestamp":"2026-11-14 12:46:38"}
+{"level":"info","message":"Incoming request: GET /api/v1/notification/clinic?limit=8","service":"default-service-name","timestamp":"2026-11-14 12:47:01"}
